@@ -47,6 +47,16 @@ export function isPart(clip: WorkflowClipFields): clip is WorkflowClipFields & {
   return clip.workflow_role === "part" && typeof clip.part_number === "number";
 }
 
+export function GoogleDriveIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="none" aria-hidden="true">
+      <path d="M7.71 3.5L1.15 15l3.43 6 6.55-11.5L7.71 3.5z" fill="#FFBA00" />
+      <path d="M8.7 15l3.43 6h10.72l-3.43-6H8.7z" fill="#2684FC" />
+      <path d="M22.85 15L16.29 3.5H9.43l6.56 11.5h6.86z" fill="#00AC47" />
+    </svg>
+  );
+}
+
 export function showsScore(clip: Pick<WallClip, "virality_score" | "workflow_role">) {
   return clip.virality_score > 0 && !UNSCORED_ROLES.has(clip.workflow_role ?? "");
 }
@@ -89,7 +99,7 @@ function sourceMoments(clip: WallClip): SourceRange[] | null {
   return Array.isArray(ranges) && ranges.length > 1 ? ranges : null;
 }
 
-export function ClipTile({ clip, taskId, busy, best, editable, partTotal, onOpen, onDownload, onDelete }: {
+export function ClipTile({ clip, taskId, busy, best, editable, partTotal, onOpen, onDownload, onDelete, onSaveToDrive, isSavingToDrive }: {
   clip: WallClip;
   taskId: string;
   busy: boolean;
@@ -100,6 +110,8 @@ export function ClipTile({ clip, taskId, busy, best, editable, partTotal, onOpen
   onOpen: () => void;
   onDownload: () => void;
   onDelete?: () => void;
+  onSaveToDrive?: () => void;
+  isSavingToDrive?: boolean;
 }) {
   const t = useTranslations("task");
   const title = clipTitle(clip, t);
@@ -150,7 +162,7 @@ export function ClipTile({ clip, taskId, busy, best, editable, partTotal, onOpen
         )}
         <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">{clip.start_time} – {clip.end_time}</p>
         <div className="mt-2 flex items-center gap-1">
-          <Button size="sm" variant="outline" className="h-7 flex-1 px-2 text-xs" onClick={onDownload} disabled={busy} aria-label={t("downloadNamed", { title })}>
+          <Button size="sm" variant="outline" className="h-7 flex-1 px-2 text-xs" onClick={onDownload} disabled={busy || isSavingToDrive} aria-label={t("downloadNamed", { title })}>
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}<span className="hidden @min-[190px]:inline">{t("download")}</span>
           </Button>
           {editable && (
@@ -164,6 +176,23 @@ export function ClipTile({ clip, taskId, busy, best, editable, partTotal, onOpen
             </Button>
           )}
         </div>
+        {onSaveToDrive && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-1.5 h-7 w-full px-2 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-foreground"
+            onClick={onSaveToDrive}
+            disabled={busy || isSavingToDrive}
+            aria-label={`Save ${title} to Google Drive`}
+          >
+            {isSavingToDrive ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <GoogleDriveIcon className="size-3.5" />
+            )}
+            <span>{isSavingToDrive ? "Saving..." : "Save to Drive"}</span>
+          </Button>
+        )}
       </div>
     </article>
   );
@@ -176,7 +205,7 @@ const BREAKDOWN = [
   { key: "shareability_score", labelKey: "shareability", icon: Share2 },
 ] as const;
 
-export function ClipFocus({ clip, taskId, index, total, busy, editable, onNavigate, onClose, onDownload, onDelete, hookTypeLabel, actions, children }: {
+export function ClipFocus({ clip, taskId, index, total, busy, editable, onNavigate, onClose, onDownload, onDelete, onSaveToDrive, isSavingToDrive, hookTypeLabel, actions, children }: {
   clip: WallClip | null;
   taskId: string;
   index: number;
@@ -187,6 +216,8 @@ export function ClipFocus({ clip, taskId, index, total, busy, editable, onNaviga
   onClose: () => void;
   onDownload: () => void;
   onDelete?: () => void;
+  onSaveToDrive?: () => void;
+  isSavingToDrive?: boolean;
   hookTypeLabel: (hookType: string | null) => string;
   /** Extra footer actions for the focused clip (e.g. publishing). */
   actions?: React.ReactNode;
@@ -287,9 +318,15 @@ export function ClipFocus({ clip, taskId, index, total, busy, editable, onNaviga
                 {children}
               </div>
               <div className="mt-auto flex flex-wrap items-center gap-2 border-t bg-muted/30 px-5 py-3">
-                <Button size="sm" onClick={onDownload} disabled={busy}>
+                <Button size="sm" onClick={onDownload} disabled={busy || isSavingToDrive}>
                   {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}{t("download")}
                 </Button>
+                {onSaveToDrive && (
+                  <Button size="sm" variant="outline" onClick={onSaveToDrive} disabled={busy || isSavingToDrive}>
+                    {isSavingToDrive ? <Loader2 className="size-4 animate-spin" /> : <GoogleDriveIcon className="size-4" />}
+                    {isSavingToDrive ? "Saving..." : "Save to Drive"}
+                  </Button>
+                )}
                 {editable && (
                   <Button size="sm" variant="outline" asChild>
                     <Link href={`/tasks/${taskId}/edit?clip=${clip.id}`}><Scissors className="size-4" />{t("openInEditor")}</Link>

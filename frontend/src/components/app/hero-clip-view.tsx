@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Download, Loader2, Scissors } from "lucide-react";
-import { sourceTimestamp, type WallClip } from "@/components/app/clip-wall";
+import { GoogleDriveIcon, sourceTimestamp, type WallClip } from "@/components/app/clip-wall";
 import { Button } from "@/components/ui/button";
 import { getClipUrl } from "@/lib/clip-actions";
 import { formatClipDuration } from "@/lib/generations";
@@ -77,7 +77,7 @@ function activeMoment(moments: HeroMoment[], time: number) {
 }
 
 /** A recap or trailer: one centred 9:16 player with its points or beats. */
-export function HeroClipView({ workflow, clip, plan, taskId, editable, busy, onDownload, actions }: {
+export function HeroClipView({ workflow, clip, plan, taskId, editable, busy, onDownload, onSaveToDrive, isSavingToDrive, actions }: {
   workflow: "recap" | "trailer";
   clip: WallClip;
   plan?: WorkflowPlan | null;
@@ -85,6 +85,8 @@ export function HeroClipView({ workflow, clip, plan, taskId, editable, busy, onD
   editable: boolean;
   busy: boolean;
   onDownload: () => void;
+  onSaveToDrive?: () => void;
+  isSavingToDrive?: boolean;
   /** Extra actions (publishing). */
   actions?: React.ReactNode;
 }) {
@@ -141,9 +143,15 @@ export function HeroClipView({ workflow, clip, plan, taskId, editable, busy, onD
         <h2 className="mt-1.5 font-display text-2xl font-bold leading-tight tracking-tight">{title}</h2>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={onDownload} disabled={busy}>
+          <Button size="sm" onClick={onDownload} disabled={busy || isSavingToDrive}>
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}{t("download")}
           </Button>
+          {onSaveToDrive && (
+            <Button size="sm" variant="outline" onClick={onSaveToDrive} disabled={busy || isSavingToDrive}>
+              {isSavingToDrive ? <Loader2 className="size-4 animate-spin" /> : <GoogleDriveIcon className="size-4" />}
+              {isSavingToDrive ? "Saving..." : "Save to Drive"}
+            </Button>
+          )}
           {editable && (
             <Button size="sm" variant="outline" asChild>
               <Link href={`/tasks/${taskId}/edit?clip=${clip.id}`}><Scissors className="size-4" />{t("openInEditor")}</Link>

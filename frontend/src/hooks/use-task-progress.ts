@@ -59,7 +59,7 @@ export function useTaskProgress<T>({ taskId, active, refresh, onProgress, onClip
       source.close();
       void reconcile();
     });
-    const timer = window.setInterval(() => { void reconcile(); }, 5000);
+    const timer = window.setInterval(() => { void reconcile(); }, 20000);
     const onVisible = () => { if (document.visibilityState === "visible") void reconcile(); };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("online", onVisible);

@@ -67,7 +67,19 @@ def export_options_hash(preset: str, source_file_path: str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def export_download_filename(clip_filename: str, preset: str) -> str:
+def export_download_filename(
+    clip_filename: str,
+    preset: str,
+    video_title: Optional[str] = None,
+    clip_number: Optional[int | str] = None,
+) -> str:
+    if video_title:
+        from ..media.naming import format_clip_filename
+        return format_clip_filename(
+            video_title,
+            clip_number or 1,
+            preset=preset if preset != "original" else None,
+        )
     suffix = f"_{preset}.mp4"
     stem = Path(clip_filename).name
     if stem.lower().endswith(".mp4"):
@@ -321,7 +333,12 @@ async def start_export(
         preset=preset,
         options_hash=options_hash,
         source_file_path=clip["file_path"],
-        download_filename=export_download_filename(clip["filename"], preset),
+        download_filename=export_download_filename(
+            clip["filename"],
+            preset,
+            video_title=task.get("source_title") or (task.get("source_metadata") or {}).get("title"),
+            clip_number=clip.get("clip_order") or 1,
+        ),
         ttl_seconds=CLIP_EXPORT_TTL_SECONDS,
     )
     await db.commit()
@@ -437,6 +454,13 @@ async def export_clip_preset(ctx, export_id: str) -> dict:
                 pass
             except Exception:
                 logger.warning("Clip export %s stopped reporting progress", export_id, exc_info=True)
+
+        try:
+            from .auto_export_service import process_post_export
+            export_filename = row.get("download_filename") or f"{export_id}_{row.get('preset')}.mp4"
+            await run_in_thread(process_post_export, output_path, export_filename)
+        except Exception as export_hook_err:
+            logger.warning("Auto export hook failed: %s", export_hook_err)
 
         reference = str(output_path)
         if storage.enabled:

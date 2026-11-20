@@ -21,6 +21,8 @@ class Config:
         self.youtube_data_api_key = self._get_runtime_setting("YOUTUBE_DATA_API_KEY")
         self.ollama_base_url = self._get_runtime_setting("OLLAMA_BASE_URL")
         self.ollama_api_key = self._get_runtime_setting("OLLAMA_API_KEY")
+        self.groq_api_key = self._get_runtime_setting("GROQ_API_KEY")
+        self.groq_model = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
 
         self.whisper_model = os.getenv("WHISPER_MODEL") or os.getenv("WHISPER_MODEL_SIZE", "base")
         self.transcription_provider = self._normalize_transcription_provider(
@@ -313,6 +315,8 @@ class Config:
         subscription_provider: str | None = None,
     ) -> int:
         """Return the YouTube duration cap granted by an active entitlement."""
+        if self.max_video_duration == 0:
+            return 0
         status = (subscription_status or "").lower()
         provider = (subscription_provider or "").lower()
         # past_due keeps the cap only while Stripe is still retrying the invoice.
@@ -444,7 +448,11 @@ class Config:
         return "yt_dlp"
 
     def resolve_youtube_data_api_key(self) -> str | None:
-        return self.youtube_data_api_key or self.google_api_key
+        if self.youtube_data_api_key:
+            return self.youtube_data_api_key
+        if self.google_api_key and self.google_api_key.startswith("AIza"):
+            return self.google_api_key
+        return None
 
     def resolve_ollama_base_url(self) -> str:
         return self.ollama_base_url or self._default_ollama_base_url()

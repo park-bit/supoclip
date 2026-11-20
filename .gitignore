@@ -25,3 +25,12 @@ docs/youtube-provider-registry*.json
 
 # Local agent checkouts
 .claude/worktrees/
+
+# Exports and cached transcripts
+exports/
+*.transcript_cache.json
+
+# OAuth and credentials files
+client_secret*.json
+credentials*.json
+token*.json

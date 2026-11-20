@@ -18,6 +18,7 @@ import time
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from .media.ffmpeg import get_export_encoder_args
 
 BROLL_MIN_SECONDS = 0.2
 BROLL_CONTINUATION_MIN_SECONDS = 0.04
@@ -573,19 +574,13 @@ def render_document(
     ]
     if audio:
         command += ["-map", "[outa]", "-c:a", "aac", "-b:a", "192k"]
+    encoder_args = get_export_encoder_args(
+        video_bitrate="12M" if preset == "reels" else "10M",
+        bufsize="24M",
+        crf=18,
+    )
     command += [
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "18",
-        "-maxrate",
-        "12M" if preset == "reels" else "10M",
-        "-bufsize",
-        "24M",
-        "-pix_fmt",
-        "yuv420p",
+        *encoder_args,
         "-movflags",
         "+faststart",
         "-t",

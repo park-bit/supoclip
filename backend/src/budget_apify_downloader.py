@@ -308,8 +308,12 @@ def _run(actor, video_id, temp_dir, quality, token, run_timeout, charge_cap):
     provider = _providers()[actor]
     run_timeout = min(run_timeout, int(provider.get("run_timeout_seconds", run_timeout)))
     adapter = provider["adapter"]
-    maximum_minutes = min(720, math.ceil(max(config.max_video_duration,
-        config.pro_youtube_max_video_duration, config.scale_youtube_max_video_duration) / 60))
+    max_duration_seconds = max(
+        config.max_video_duration,
+        config.pro_youtube_max_video_duration,
+        config.scale_youtube_max_video_duration,
+    )
+    maximum_minutes = 720 if max_duration_seconds <= 0 else min(720, math.ceil(max_duration_seconds / 60))
     expected_duration = None
     if adapter in {"signed_url", "private_s3"}:
         # Establish duration using the configured metadata provider before spending.

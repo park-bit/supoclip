@@ -9,6 +9,7 @@ from typing import Tuple
 from ..clip_source_map import normalize_source_ranges
 from ..config import get_config
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -307,6 +308,42 @@ def ffmpeg_escape_filter_path(path: Path) -> str:
 # source's times, and MP4 stores them as a text track as long as the source.
 NO_CHAPTERS = ("-map_chapters", "-1")
 
+_NVENC_AVAILABLE: Optional[bool] = None
+
+
+def has_nvenc() -> bool:
+    """Check if NVIDIA NVENC hardware acceleration is available."""
+    global _NVENC_AVAILABLE
+    if _NVENC_AVAILABLE is not None:
+        return _NVENC_AVAILABLE
+    if os.getenv("USE_NVENC", "true").lower() in ("false", "0", "no"):
+        _NVENC_AVAILABLE = False
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=320x240:rate=1",
+                "-c:v",
+                "h264_nvenc",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        _NVENC_AVAILABLE = proc.returncode == 0
+    except Exception:
+        _NVENC_AVAILABLE = False
+    logger.info("Hardware NVENC encoder available: %s", _NVENC_AVAILABLE)
+    return _NVENC_AVAILABLE
+
 
 def build_final_video_encode_args(
     crf: int = FINAL_VIDEO_CRF,
@@ -314,15 +351,29 @@ def build_final_video_encode_args(
     fps: int | str = OUTPUT_FPS,
     level: str = "4.1",
 ) -> List[str]:
-    """libx264 args for the quality-determining final pass (CFR, H.264 High).
+    """H.264 encode args for the quality-determining final pass (CFR, H.264 High).
 
-    Level 4.1 covers 1080p30. Original-format output at 60 fps (or 59.94)
-    needs 4.2 or x264 rejects the stream.
+    Uses h264_nvenc GPU encoding when available, otherwise falls back to
+    optimized multithreaded libx264.
     """
+    if has_nvenc():
+        return [
+            *NO_CHAPTERS,
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-cq", str(max(18, crf)),
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "high",
+            "-level", level,
+            "-r", str(fps),
+            "-rc:v", "vbr",
+            "-tune:v", "hq",
+        ]
     return [
         *NO_CHAPTERS,
         "-c:v", "libx264",
-        "-preset", preset,
+        "-preset", preset if preset not in ("medium", "slow") else "veryfast",
+        "-threads", "0",
         "-crf", str(crf),
         "-pix_fmt", "yuv420p",
         "-profile:v", "high",
@@ -330,6 +381,34 @@ def build_final_video_encode_args(
         "-r", str(fps),
         "-x264-params", "keyint=120:min-keyint=30:scenecut=40",
     ]
+
+
+def get_export_encoder_args(
+    video_bitrate: Optional[str] = None,
+    audio_bitrate: str = "192k",
+    crf: int = 18,
+    bufsize: Optional[str] = None,
+) -> List[str]:
+    """Return encoder arguments supporting both NVENC GPU and fast CPU x264."""
+    args: List[str] = []
+    if has_nvenc():
+        args.extend(["-c:v", "h264_nvenc", "-preset", "p4"])
+        if video_bitrate:
+            args.extend(["-b:v", video_bitrate, "-maxrate", video_bitrate])
+            if bufsize:
+                args.extend(["-bufsize", bufsize])
+            args.extend(["-rc:v", "vbr", "-tune:v", "hq"])
+        else:
+            args.extend(["-cq", str(crf), "-rc:v", "vbr", "-tune:v", "hq"])
+        args.extend(["-pix_fmt", "yuv420p", "-profile:v", "high"])
+    else:
+        args.extend(["-c:v", "libx264", "-preset", "veryfast", "-threads", "0"])
+        if video_bitrate:
+            args.extend(["-maxrate", video_bitrate])
+            if bufsize:
+                args.extend(["-bufsize", bufsize])
+        args.extend(["-crf", str(crf), "-pix_fmt", "yuv420p", "-profile:v", "high"])
+    return args
 
 
 def cap_video_short_side(video_path: Path, short_side: int) -> bool:

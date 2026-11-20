@@ -27,6 +27,7 @@ from ...services.task_service import TaskService
 from ...services.ai_edit_allowance_service import (
     AIEditAllowanceService, AIEditLimitExceeded, refund_ai_edit_usage,
 )
+from ...media.naming import format_clip_filename
 from ...workers.job_queue import JobQueue
 from ...utils.async_helpers import run_in_thread
 from .tasks import _require_task_owner, _read_json_object
@@ -299,16 +300,21 @@ async def export_file(
     request: Request,
     db: AsyncSession = Depends(get_db, scope="function"),
 ):
-    _, directory = await context(request, db, task_id, clip_id)
+    task, clip, directory = await owned_context(request, db, task_id, clip_id)
     status = json.loads(job_path(directory, job_id).read_text())
     output = directory / f"export-{job_id}.mp4"
     if status["status"] != "completed":
         raise HTTPException(409, "Export is not ready")
     storage = MediaStorage()
     reference = storage.editor_reference(directory, output.name)
+    download_filename = format_clip_filename(
+        task.get("source_title"),
+        clip.get("clip_order") or 1,
+        preset=status.get("preset"),
+    )
     try:
         if (storage.enabled or (directory / ".s3-manifest").exists()) and await run_in_thread(storage.exists, reference):
-            url = await run_in_thread(storage.signed_url, reference, f"supoclip-{clip_id[:8]}-{job_id[:6]}.mp4", attachment=True)
+            url = await run_in_thread(storage.signed_url, reference, download_filename, attachment=True)
             return RedirectResponse(url, status_code=307, headers={"Cache-Control": "private, no-store"})
     except STORAGE_ERRORS:
         if not output.exists():
@@ -318,7 +324,7 @@ async def export_file(
     return FileResponse(
         output,
         media_type="video/mp4",
-        filename=f"supoclip-{clip_id[:8]}-{job_id[:6]}.mp4",
+        filename=download_filename,
         headers={"Cache-Control": "private, no-store"},
     )
 

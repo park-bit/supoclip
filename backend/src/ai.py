@@ -364,7 +364,7 @@ HOOK TITLES ("hook_title" per segment):
 - Stay grounded: only promise what the clip actually delivers; never invent facts or numbers
 - Do not simply repeat the first spoken words verbatim; reframe them as a headline
 - Plain text only: no hashtags, no emojis, no quotes around the title
-- Write it in the same language as the transcript
+- Write it in the same language as the transcript. If the transcript is in Hindi / Hinglish, write hook_title in Romanized Hindi (Hinglish with Latin alphabet, e.g. "Kyun Log Ye Galti Karte Hain") so caption fonts render cleanly
 - Good examples: "The $40k mistake I keep seeing", "Why nobody tells you this about VC", "Do this before your next interview"
 
 CLIP BOUNDARIES — OPENING AND ENDING:
@@ -911,9 +911,12 @@ def sanitize_hook_title(raw: Optional[str]) -> Optional[str]:
     title = re.sub(r"#\w+", "", title)
     title = re.sub(r"\s+", " ", title).strip()
     # Drop trailing sentence punctuation but keep ?/! (they carry the hook).
-    title = title.rstrip(".,;:-–— ").strip()
+    title = title.rstrip(".,;:-–— ।॥ ").strip()
     if not title:
         return None
+
+    from .media.romanize import romanize_text, strip_devanagari_full_stops
+    title = strip_devanagari_full_stops(romanize_text(title))
 
     words = title.split()
     if len(words) > HOOK_TITLE_MAX_WORDS:

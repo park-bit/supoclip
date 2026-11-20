@@ -15,7 +15,7 @@ import uuid
 
 from .caption_templates import get_template
 from .workflows.language import is_no_space
-from .media.ffmpeg import ffmpeg_escape_filter_path, ffprobe_video_size
+from .media.ffmpeg import ffmpeg_escape_filter_path, ffprobe_video_size, get_export_encoder_args
 from .media.source_limits import FPS_EPSILON, MAX_OUTPUT_FPS, probe_video_geometry
 from .video_utils import (
     ass_fonts_dir,
@@ -89,16 +89,7 @@ def _double_bitrate(value: str) -> str:
 
 def _encode_args(audio_bitrate: str = "256k") -> list[str]:
     return [
-        "-c:v",
-        "libx264",
-        "-preset",
-        "slow",
-        "-crf",
-        "18",
-        "-pix_fmt",
-        "yuv420p",
-        "-profile:v",
-        "high",
+        *get_export_encoder_args(audio_bitrate=audio_bitrate, crf=18),
         "-c:a",
         "aac",
         "-b:a",
@@ -512,6 +503,12 @@ def export_with_preset(
     geometry = probe_video_geometry(input_path)
     if geometry and geometry.fps is not None and geometry.fps > MAX_OUTPUT_FPS + FPS_EPSILON:
         scale_filter = f"fps={MAX_OUTPUT_FPS},{scale_filter}"
+    encoder_args = get_export_encoder_args(
+        video_bitrate=preset.video_bitrate,
+        audio_bitrate=preset.audio_bitrate,
+        bufsize=_double_bitrate(preset.video_bitrate),
+        crf=18,
+    )
     command = [
         "ffmpeg",
         "-y",
@@ -519,20 +516,7 @@ def export_with_preset(
         str(input_path),
         "-vf",
         scale_filter,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "slow",
-        "-crf",
-        "18",
-        "-maxrate",
-        preset.video_bitrate,
-        "-bufsize",
-        _double_bitrate(preset.video_bitrate),
-        "-pix_fmt",
-        "yuv420p",
-        "-profile:v",
-        "high",
+        *encoder_args,
         "-c:a",
         "aac",
         "-b:a",

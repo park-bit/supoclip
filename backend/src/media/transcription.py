@@ -29,6 +29,7 @@ from .ffmpeg import (
     run_ffmpeg_command,
     select_audio_stream_index,
 )
+from .romanize import romanize_transcript_data, romanize_text
 
 
 def _prepare_audio_for_transcription(video_path: Path) -> Path:
@@ -202,7 +203,13 @@ def transcribe_with_whisper(
         model_name,
         whisper_language or "auto",
     )
-    return model.transcribe(str(audio_path), word_timestamps=True, language=whisper_language)
+    initial_prompt = "Hindi, Hinglish, Idli, Sambar, Vadapav, Vada Pav, Dosa, Bhai, Yaar, Baat, Paisa, Filmmaking, Podcast."
+    return model.transcribe(
+        str(audio_path),
+        word_timestamps=True,
+        language=whisper_language,
+        initial_prompt=initial_prompt,
+    )
 
 
 def _whisper_result_to_transcript_data(whisper_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -280,6 +287,11 @@ def transcribe_with_youtube_captions(video_url: str) -> Optional[str]:
             "subtitlesformat": "vtt",
             "skip_download": True,
             "outtmpl": str(temp_dir / video_id),
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios", "web"],
+                },
+            },
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video_url])
@@ -363,6 +375,13 @@ def _get_transcript_with_assemblyai(
     # Without a language, AssemblyAI assumes US English and garbles everything
     # else; detection also routes to the first listed model that supports it.
     language = runtime_config.transcription_language
+    audio_keyterms = [
+        "idli", "sambar", "vadapav", "vada pav", "dosa", "chutney", "biryani",
+        "roti", "chai", "paneer", "dal", "samosa", "chhole", "bhature", "paratha",
+        "bhai", "yaar", "namaste", "duniya", "baat", "baatein", "paisa", "paise",
+        "kya", "kyun", "kaise", "nahi", "achha", "bahut", "sirji", "karna", "karke",
+        "filmmaking", "creator", "podcast", "youtube", "subscriber", "channel",
+    ]
     config_obj = aai.TranscriptionConfig(
         speaker_labels=True,
         punctuate=True,
@@ -370,6 +389,7 @@ def _get_transcript_with_assemblyai(
         speech_models=speech_models_value,
         language_code=language or None,
         language_detection=None if language else True,
+        keyterms_prompt=audio_keyterms,
     )
 
     try:
@@ -398,8 +418,12 @@ def _get_transcript_with_assemblyai(
             response.get("language_confidence"),
         )
 
-        formatted_lines = format_transcript_for_analysis(transcript)
         cache_transcript_data(video_path, transcript)
+        cached_data = load_cached_transcript_data(video_path)
+        if cached_data:
+            formatted_lines = format_transcript_for_analysis(cached_data)
+        else:
+            formatted_lines = format_transcript_for_analysis(transcript)
 
         result = "\n".join(formatted_lines)
         logger.info(
@@ -456,6 +480,7 @@ def cache_transcript_data(video_path: Path, transcript) -> None:
 
     if isinstance(transcript, dict):
         cache_data = _whisper_result_to_transcript_data(transcript)
+        cache_data = romanize_transcript_data(cache_data)
         with open(cache_path, "w") as f:
             json.dump(cache_data, f)
         logger.info("Cached %d words to %s", len(cache_data["words"]), cache_path)
@@ -495,6 +520,7 @@ def cache_transcript_data(video_path: Path, transcript) -> None:
         # cutting ordinary words in other languages.
         "language_code": language_code if isinstance(language_code, str) else None,
     }
+    cache_data = romanize_transcript_data(cache_data)
 
     with open(cache_path, "w") as f:
         json.dump(cache_data, f)
@@ -519,6 +545,40 @@ def load_cached_transcript_data(video_path: Path) -> Optional[Dict]:
     except Exception as e:
         logger.warning(f"Failed to load transcript cache: {e}")
         return None
+
+
+class AnalysisWord:
+    __slots__ = ("text", "start", "end", "speaker", "confidence")
+
+    def __init__(self, text: str, start: int, end: int, speaker=None, confidence=1.0):
+        self.text = text
+        self.start = start
+        self.end = end
+        self.speaker = speaker
+        self.confidence = confidence
+
+
+def _to_analysis_word(word: Any) -> AnalysisWord:
+    if isinstance(word, dict):
+        raw_start = word.get("start", 0)
+        raw_end = word.get("end", 0)
+        start = int(raw_start * 1000) if isinstance(raw_start, float) else int(raw_start)
+        end = int(raw_end * 1000) if isinstance(raw_end, float) else int(raw_end)
+        text = str(word.get("text", word.get("word", "")))
+        return AnalysisWord(
+            text=text,
+            start=start,
+            end=end,
+            speaker=word.get("speaker"),
+            confidence=float(word.get("probability", word.get("confidence", 1.0))),
+        )
+    return AnalysisWord(
+        text=str(getattr(word, "text", getattr(word, "word", ""))),
+        start=int(getattr(word, "start", 0)),
+        end=int(getattr(word, "end", 0)),
+        speaker=getattr(word, "speaker", None),
+        confidence=float(getattr(word, "confidence", 1.0)),
+    )
 
 
 def _serialize_transcript_word(word) -> Dict[str, Any]:
@@ -571,8 +631,12 @@ def _format_words_for_analysis(
     if not words:
         return []
 
+    norm_words = [_to_analysis_word(w) for w in words if w]
+    if not norm_words:
+        return []
+
     formatted_lines: List[str] = []
-    current_words: List[Any] = []
+    current_words: List[AnalysisWord] = []
     current_start: Optional[int] = None
 
     def flush_segment() -> None:
@@ -588,7 +652,7 @@ def _format_words_for_analysis(
         current_words = []
         current_start = None
 
-    for word in words:
+    for word in norm_words:
         if current_start is None:
             current_start = word.start
 
@@ -624,10 +688,48 @@ def format_transcript_for_analysis(transcript) -> List[str]:
     Handles both AssemblyAI transcript objects (utterances/words with ms
     timings) and Whisper result dicts (segments with second-based timings).
     """
-    # Whisper result dict: treat each segment as an utterance, converting the
-    # second-based timings to milliseconds to match the timestamp formatter.
+    # Cached transcript dict or Whisper result dict
     if isinstance(transcript, dict):
         formatted_lines = []
+        utterances = transcript.get("utterances") or []
+        if utterances:
+            total_utts = len(utterances)
+            for utterance in utterances:
+                start_ms = int(utterance.get("start", 0))
+                end_ms = int(utterance.get("end", 0))
+                duration_ms = max(0, end_ms - start_ms)
+                speaker = utterance.get("speaker")
+                utterance_words = utterance.get("words") or []
+
+                if utterance_words and (
+                    duration_ms > ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_MS
+                    or len(utterance_words) > ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_WORDS
+                    or total_utts == 1
+                ):
+                    formatted_lines.extend(
+                        _format_words_for_analysis(
+                            utterance_words,
+                            speaker,
+                            max_words_per_segment=ANALYSIS_LONG_UTTERANCE_MAX_WORDS,
+                            max_duration_ms=ANALYSIS_LONG_UTTERANCE_MAX_DURATION_MS,
+                        )
+                    )
+                    continue
+
+                speaker_prefix = f"Speaker {speaker}: " if speaker else ""
+                text = utterance.get("text", "").strip()
+                if text:
+                    formatted_lines.append(
+                        f"[{format_ms_to_timestamp(start_ms)} - {format_ms_to_timestamp(end_ms)}] "
+                        f"{speaker_prefix}{text}"
+                    )
+            if formatted_lines:
+                return [romanize_text(line) for line in formatted_lines]
+
+        words = transcript.get("words") or []
+        if words:
+            return [romanize_text(line) for line in _format_words_for_analysis(words)]
+
         for segment in transcript.get("segments") or []:
             start_ms = int(segment.get("start", 0) * 1000)
             end_ms = int(segment.get("end", 0) * 1000)
@@ -635,17 +737,19 @@ def format_transcript_for_analysis(transcript) -> List[str]:
                 f"[{format_ms_to_timestamp(start_ms)} - {format_ms_to_timestamp(end_ms)}] "
                 f"{segment.get('text', '').strip()}"
             )
-        return formatted_lines
+        return [romanize_text(line) for line in formatted_lines]
 
     utterances = getattr(transcript, "utterances", None) or []
     if utterances:
         formatted_lines = []
+        total_utts = len(utterances)
         for utterance in utterances:
             utterance_words = list(getattr(utterance, "words", []) or [])
             utterance_duration = max(0, int(utterance.end) - int(utterance.start))
             if utterance_words and (
                 utterance_duration > ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_MS
                 or len(utterance_words) > ANALYSIS_UTTERANCE_SPLIT_THRESHOLD_WORDS
+                or total_utts == 1
             ):
                 formatted_lines.extend(
                     _format_words_for_analysis(
@@ -664,7 +768,7 @@ def format_transcript_for_analysis(transcript) -> List[str]:
             formatted_lines.append(
                 f"[{start_time} - {end_time}] {speaker_prefix}{utterance.text}"
             )
-        return formatted_lines
+        return [romanize_text(line) for line in formatted_lines]
 
     formatted_lines = []
     words = getattr(transcript, "words", None) or []
@@ -672,7 +776,7 @@ def format_transcript_for_analysis(transcript) -> List[str]:
         return formatted_lines
 
     logger.info(f"Processing {len(words)} words with precise timing")
-    return _format_words_for_analysis(words)
+    return [romanize_text(line) for line in _format_words_for_analysis(words)]
 
 
 def format_ms_to_timestamp(ms: int) -> str:

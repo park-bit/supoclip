@@ -7,7 +7,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { useTaskProgress } from "@/hooks/use-task-progress";
 import { StatusBadge, ACTIVE_TASK_STATUSES } from "@/components/app/status-badge";
-import { getClipUrl, requestAction, EXPORT_PRESETS } from "@/lib/clip-actions";
+import { getClipUrl, requestAction, EXPORT_PRESETS, saveClipToDrive, formatClipFilename } from "@/lib/clip-actions";
 import { clipExportFilePath, pollClipExport, triggerFileDownload } from "@/lib/clip-export";
 import { downloadAllClips } from "@/lib/clip-archive";
 import { trackClipExport } from "@/lib/clip-export-tracking";
@@ -243,6 +243,7 @@ export default function TaskPage() {
   const sortChosen = useRef(false);
   const [focusIndex, setFocusIndex] = useState<number | null>(null);
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
+  const [savingDriveClipId, setSavingDriveClipId] = useState<string | null>(null);
 
   const taskApiUrl = "/api/tasks";
 
@@ -625,9 +626,16 @@ export default function TaskPage() {
       fallbackMessage: t("errors.exportClip"),
       timeoutMessage: t("errors.exportClip"),
     });
+    const targetClip = clips.find((c) => c.id === clipId);
+    const clipOrder = targetClip?.clip_order || 1;
+    const downloadName = formatClipFilename(
+      task?.source_title,
+      clipOrder,
+      exportPreset !== "original" ? exportPreset : undefined,
+    );
     triggerFileDownload(
       clipExportFilePath(taskApiUrl, taskId, clipId, job.id),
-      `${fallbackFilename.replace(/\.mp4$/i, "")}_${exportPreset}.mp4`,
+      downloadName,
     );
     void trackClipExport({ userId: session.user.id, surface: "task", format: exportPreset });
   };
@@ -635,8 +643,9 @@ export default function TaskPage() {
   const downloadOriginal = (clip: Clip) => {
     const link = document.createElement("a");
     const url = getClipUrl(clip.video_url, clip.filename);
+    const downloadName = formatClipFilename(task?.source_title, clip.clip_order || 1);
     link.href = `${url}${url.includes("?") ? "&" : "?"}download=true`;
-    link.download = clip.filename;
+    link.download = downloadName;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -667,6 +676,27 @@ export default function TaskPage() {
       toast.error(downloadError instanceof Error ? downloadError.message : t("errors.downloadAll"));
     } finally {
       setIsDownloadingAll(false);
+    }
+  };
+
+  const handleSaveToDrive = async (clip: Clip) => {
+    const currentTaskId = task?.id ?? String(params.id);
+    if (!currentTaskId || savingDriveClipId) return;
+    setSavingDriveClipId(clip.id);
+    try {
+      const result = await saveClipToDrive(currentTaskId, clip.id);
+      toast.success(`Saved "${result.name}" to Google Drive`, {
+        action: result.web_view_link
+          ? {
+              label: "Open in Drive",
+              onClick: () => window.open(result.web_view_link, "_blank"),
+            }
+          : undefined,
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save to Google Drive");
+    } finally {
+      setSavingDriveClipId(null);
     }
   };
 
@@ -838,6 +868,8 @@ export default function TaskPage() {
       onOpen={() => setFocusIndex(index)}
       onDownload={() => handleDownloadClip(clip)}
       onDelete={readOnly ? undefined : () => setDeletingClipId(clip.id)}
+      onSaveToDrive={() => void handleSaveToDrive(clip)}
+      isSavingToDrive={savingDriveClipId === clip.id}
       editable={task?.status === "completed" && !readOnly}
     />
   );
@@ -1038,6 +1070,8 @@ export default function TaskPage() {
             onDownloadAll={() => void handleDownloadAll()}
             onResume={readOnly ? undefined : handleResume}
             resumeDisabled={pendingAction !== null}
+            onSaveToDrive={(clip) => void handleSaveToDrive(clip)}
+            savingDriveId={savingDriveClipId}
             renderActions={publishButton}
           />
         ) : heroClip && SINGLE_OUTPUT.has(workflow) ? (
@@ -1051,6 +1085,8 @@ export default function TaskPage() {
               editable={task.status === "completed" && !readOnly}
               busy={pendingAction === heroClip.id}
               onDownload={() => handleDownloadClip(heroClip)}
+              onSaveToDrive={() => void handleSaveToDrive(heroClip)}
+              isSavingToDrive={savingDriveClipId === heroClip.id}
               actions={publishButton(heroClip)}
             />
           </>
@@ -1103,6 +1139,8 @@ export default function TaskPage() {
         onNavigate={(delta) => setFocusIndex((i) => (i === null ? i : (i + delta + sortedClips.length) % sortedClips.length))}
         onClose={() => setFocusIndex(null)}
         onDownload={() => focusedClip && handleDownloadClip(focusedClip)}
+        onSaveToDrive={focusedClip ? () => void handleSaveToDrive(focusedClip) : undefined}
+        isSavingToDrive={focusedClip ? savingDriveClipId === focusedClip.id : false}
         onDelete={readOnly ? undefined : () => { if (focusedClip) { setDeletingClipId(focusedClip.id); setFocusIndex(null); } }}
         hookTypeLabel={getHookTypeLabel}
         actions={focusedClip ? publishButton(focusedClip) : null}

@@ -157,7 +157,10 @@ def content_disposition(filename: str) -> str:
 
 
 def resolve_entries(
-    clips: list[dict[str, Any]], storage: MediaStorage, workflow: str | None = None
+    clips: list[dict[str, Any]],
+    storage: MediaStorage,
+    workflow: str | None = None,
+    video_title: str | None = None,
 ) -> list[ArchiveEntry]:
     """Keep only clips whose file exists, with their size, in watch order. Blocking."""
     present = []
@@ -175,7 +178,16 @@ def resolve_entries(
             continue
         present.append((clip, reference, size))
     kept = [clip for clip, _, _ in present]
-    names = series_entry_names(kept) if workflow == "series" else archive_entry_names(kept)
+    if workflow == "series":
+        names = series_entry_names(kept)
+    elif video_title:
+        from .media.naming import format_clip_filename
+        names = [
+            format_clip_filename(video_title, clip.get("clip_order") or position)
+            for position, clip in enumerate(kept, start=1)
+        ]
+    else:
+        names = archive_entry_names(kept)
     return [ArchiveEntry(name, reference, size) for name, (_, reference, size) in zip(names, present)]
 
 

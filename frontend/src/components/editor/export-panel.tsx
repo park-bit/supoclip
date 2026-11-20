@@ -32,6 +32,8 @@ import {
 import { useSession } from "@/lib/auth-client";
 import { trackClipExport } from "@/lib/clip-export-tracking";
 import { exportDraft } from "@/lib/editor/export-draft";
+import { saveClipToDrive } from "@/lib/clip-actions";
+import { GoogleDriveIcon } from "@/components/app/clip-wall";
 import { editorRequest } from "./use-editor";
 import { editorMessage } from "./studio-ui";
 import { toast } from "sonner";
@@ -107,7 +109,28 @@ export function ExportPanel({
     kind: "background" | "mp4" | "opus";
   } | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]),
-    [error, setError] = useState<string | null>(null);
+    [error, setError] = useState<string | null>(null),
+    [savingDriveJobId, setSavingDriveJobId] = useState<string | null>(null);
+
+  const handleSaveJobToDrive = async (job: Job) => {
+    if (savingDriveJobId) return;
+    setSavingDriveJobId(job.id);
+    try {
+      const result = await saveClipToDrive(taskId, clip.id, job.id);
+      toast.success(`Saved "${result.name}" to Google Drive`, {
+        action: result.web_view_link
+          ? {
+              label: "Open in Drive",
+              onClick: () => window.open(result.web_view_link, "_blank"),
+            }
+          : undefined,
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save to Google Drive");
+    } finally {
+      setSavingDriveJobId(null);
+    }
+  };
   const controller = useRef<AbortController | null>(null);
   const endpoint = `/api/tasks/${taskId}/clips/${clip.id}/editor`;
   const size = outputSize(doc, asset.width, asset.height),
@@ -162,9 +185,11 @@ export function ExportPanel({
   useEffect(() => {
     if (!open) return;
     void refresh();
-    const timer = setInterval(() => void refresh(), 3000);
+    const hasActiveJobs = jobs.some((j) => j.status === "queued" || j.status === "rendering");
+    const intervalMs = hasActiveJobs ? 3000 : 12000;
+    const timer = setInterval(() => void refresh(), intervalMs);
     return () => clearInterval(timer);
-  }, [open, refresh]);
+  }, [open, refresh, jobs]);
   useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
     if (!busy || mode !== "browser") return;
@@ -419,16 +444,31 @@ export function ExportPanel({
                     )}
                   </div>
                   {job.status === "completed" ? (
-                    <Button size="sm" variant="outline" asChild>
-                      <a
-                        href={`${job.endpoint}/exports/${job.id}/file`}
-                        download
-                        onClick={() => { if (userId) void trackClipExport({ userId, surface: "editor_queue", format: "queued_render" }); }}
+                    <div className="flex items-center gap-1.5">
+                      <Button size="sm" variant="outline" asChild>
+                        <a
+                          href={`${job.endpoint}/exports/${job.id}/file`}
+                          download
+                          onClick={() => { if (userId) void trackClipExport({ userId, surface: "editor_queue", format: "queued_render" }); }}
+                        >
+                          <Download />
+                          {t("export.download")}
+                        </a>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={savingDriveJobId === job.id}
+                        onClick={() => void handleSaveJobToDrive(job)}
                       >
-                        <Download />
-                        {t("export.download")}
-                      </a>
-                    </Button>
+                        {savingDriveJobId === job.id ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <GoogleDriveIcon className="size-3.5" />
+                        )}
+                        <span>{savingDriveJobId === job.id ? "Saving..." : "Save to Drive"}</span>
+                      </Button>
+                    </div>
                   ) : (
                     (job.status === "queued" || job.status === "rendering") && (
                       <Button

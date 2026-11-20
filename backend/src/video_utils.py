@@ -414,22 +414,23 @@ def create_optimized_clip(
             speaker_words: List[Dict[str, Any]] = []
             vertical_plan = None
             caption_y = None
-            if reframe_format == "vertical":
-                if get_config().speaker_framing:
+            if reframe_format in {"vertical", "vertical_pan"}:
+                if get_config().speaker_framing or reframe_format == "vertical_pan":
                     try:
                         speaker_turns, speaker_words = build_clip_speaker_turns(
                             video_path, effective_keep_ranges, **offsets_kwargs
                         )
                     except Exception as exc:
                         logger.warning("Speaker turn extraction failed: %s", exc)
-                try:
-                    video_filter, mode, caption_y = build_vertical_filter_plan(
-                        source_clip_path, src_w, src_h, speaker_turns, speaker_words
-                    )
-                    vertical_plan = (video_filter, mode)
-                except Exception as exc:
-                    logger.warning("Vertical layout planning failed: %s", exc)
-                    caption_y = None
+                if reframe_format == "vertical":
+                    try:
+                        video_filter, mode, caption_y = build_vertical_filter_plan(
+                            source_clip_path, src_w, src_h, speaker_turns, speaker_words
+                        )
+                        vertical_plan = (video_filter, mode)
+                    except Exception as exc:
+                        logger.warning("Vertical layout planning failed: %s", exc)
+                        caption_y = None
             if layout_report is not None and caption_y is not None:
                 layout_report["caption_y"] = caption_y
 

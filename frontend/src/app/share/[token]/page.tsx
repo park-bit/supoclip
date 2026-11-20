@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatSupportMessage, parseApiError } from "@/lib/api-error";
 import { intlLocale } from "@/i18n/config";
 import { formatClipDuration } from "@/lib/generations";
+import { formatClipFilename } from "@/lib/clip-actions";
 import { SCORED, SINGLE_OUTPUT, taskWorkflow, type WorkflowClipFields, type WorkflowPlan, type WorkflowTaskFields } from "@/lib/workflows";
 
 interface SharedClip extends WorkflowClipFields {
@@ -80,8 +81,9 @@ export default function SharedGenerationPage() {
 
   const download = (clip: SharedClip) => {
     const link = document.createElement("a");
+    const downloadName = formatClipFilename(task?.source_title, clip.clip_order || 1);
     link.href = `${clipFileUrl(clip.id)}?download=true`;
-    link.download = clip.filename;
+    link.download = downloadName;
     document.body.appendChild(link);
     link.click();
     link.remove();

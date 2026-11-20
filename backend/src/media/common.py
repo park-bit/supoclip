@@ -1,6 +1,7 @@
 """Shared media dependencies and rendering constants."""
 
 from pathlib import Path
+import os
 
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -142,7 +143,7 @@ _WHISPER_MODEL_CACHE: Dict[str, Any] = {}
 
 FINAL_VIDEO_CRF = 19
 
-FINAL_VIDEO_PRESET = "medium"
+FINAL_VIDEO_PRESET = os.getenv("FFMPEG_PRESET", "veryfast")
 
 INTERMEDIATE_CRF = 16
 
@@ -196,4 +197,5 @@ KENBURNS_SUPERSAMPLE_H = 2880
 # usually stretched 1.3-2.7x from the source, which softens edges.
 UPSCALE_SHARPEN_FILTER = "unsharp=5:5:0.6:5:5:0.0"
 
-VERTICAL_SCALE_CHAIN = f"scale=1080:1920:flags=lanczos,{UPSCALE_SHARPEN_FILTER},setsar=1"
+FFMPEG_SCALE_FLAGS = os.getenv("FFMPEG_SCALE_FLAGS", "bicubic")
+VERTICAL_SCALE_CHAIN = f"scale=1080:1920:flags={FFMPEG_SCALE_FLAGS},{UPSCALE_SHARPEN_FILTER},setsar=1"

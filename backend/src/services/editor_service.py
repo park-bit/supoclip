@@ -10,6 +10,7 @@ import uuid
 from typing import get_args
 
 from ..media.render_ranges import burned_hook_title
+from ..media.ffmpeg import get_export_encoder_args
 from ..editor_document import (
     CaptionStyle,
     EditDocument,
@@ -689,6 +690,14 @@ async def export_editor(ctx, task_id: str, clip_id: str, filename: str, job_id: 
             render_document, directory, job_id, document, payload["preset"], broll_files
         )
         await cap_export_for_plan(task_id, directory / f"export-{job_id}.mp4")
+        try:
+            from .auto_export_service import process_post_export
+            export_file = directory / f"export-{job_id}.mp4"
+            filename_part = (clip.get("filename") if clip else "editor_clip").replace(".mp4", "")
+            out_name = f"{filename_part}_{payload.get('preset', 'export')}_{job_id[:8]}.mp4"
+            await run_in_thread(process_post_export, export_file, out_name)
+        except Exception as hook_err:
+            logging.getLogger(__name__).warning("Editor auto export hook failed: %s", hook_err)
         await run_in_thread(MediaStorage().persist_editor_export, directory, job_id)
         atomic_json(
             directory / f"job-{job_id}.json", {"status": "completed", "progress": 100}
@@ -809,12 +818,7 @@ async def combine_editor(ctx, task_id: str, clip_id: str, filename: str, job_id:
                 "[v]",
                 "-map",
                 "[a]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "18",
+                *get_export_encoder_args(crf=18),
                 "-c:a",
                 "aac",
                 "-movflags",

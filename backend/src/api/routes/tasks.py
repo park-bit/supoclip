@@ -22,6 +22,7 @@ import asyncio
 import hashlib
 import time
 from ...utils.async_helpers import run_in_thread
+from ...media.naming import format_clip_filename
 from ... import clip_archive
 
 from ...repositories.generation_allowance_guard import generation_allowance_guard, GenerationAllowanceBusy
@@ -123,7 +124,7 @@ async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, 
             },
         ) from None
 
-    if duration > duration_limit:
+    if duration_limit > 0 and duration > duration_limit:
         raise HTTPException(
             status_code=422,
             detail={
@@ -155,7 +156,7 @@ async def _preflight_stream_source(url: str, source: str, duration_limit: int) -
         raise HTTPException(status_code=422, detail={"code": "VIDEO_UNAVAILABLE", "message": str(exc)}) from None
     except Exception:
         raise HTTPException(status_code=503, detail={"code": "VIDEO_METADATA_UNAVAILABLE", "message": "We couldn't fetch this video, try again later. No minutes were used."}) from None
-    if duration > duration_limit:
+    if duration_limit > 0 and duration > duration_limit:
         raise HTTPException(status_code=422, detail={"code": "VIDEO_TOO_LONG", "message": f"This {source.title()} video is {duration / 60:.1f} minutes long. Your plan allows videos up to {duration_limit / 60:g} minutes. Choose a shorter VOD or clip. No minutes were used.", "duration_seconds": duration, "max_duration_seconds": duration_limit})
     return metadata
 
@@ -198,7 +199,7 @@ async def _preflight_upload_source(url: str, user_id: str, duration_limit: int, 
             },
         ) from None
 
-    if duration > duration_limit:
+    if duration_limit > 0 and duration > duration_limit:
         raise HTTPException(
             status_code=422,
             detail={
@@ -829,9 +830,14 @@ async def get_shared_clip_file(
     if not clip or clip.get("task_id") != task_id:
         raise HTTPException(status_code=404, detail="Clip not found")
 
+    task = await task_service.task_repo.get_task_by_id(db, task_id)
+    source_title = (task or {}).get("source_title") or ((task or {}).get("source_metadata") or {}).get("title")
+    clip_order = clip.get("clip_order") or 1
+    download_filename = format_clip_filename(source_title, clip_order)
+
     if is_s3(clip["file_path"]):
         await db.close()
-        url = await run_in_thread(MediaStorage().signed_url, clip["file_path"], clip["filename"], attachment=download)
+        url = await run_in_thread(MediaStorage().signed_url, clip["file_path"], download_filename, attachment=download)
         return RedirectResponse(url, status_code=307, headers={"Cache-Control": "private, no-store"})
     clip_path = Path(clip["file_path"])
     if not clip_path.exists():
@@ -840,7 +846,7 @@ async def get_shared_clip_file(
     return FileResponse(
         path=str(clip_path),
         media_type="video/mp4",
-        filename=clip["filename"],
+        filename=download_filename,
         content_disposition_type="attachment" if download else "inline",
         headers={"Cache-Control": "private, no-store"},
     )
@@ -1102,9 +1108,14 @@ async def get_clip_file(
         if not clip or clip.get("task_id") != task_id:
             raise HTTPException(status_code=404, detail="Clip not found")
 
+        task = await task_service.task_repo.get_task_by_id(db, task_id)
+        source_title = (task or {}).get("source_title") or ((task or {}).get("source_metadata") or {}).get("title")
+        clip_order = clip.get("clip_order") or 1
+        download_filename = format_clip_filename(source_title, clip_order)
+
         if is_s3(clip["file_path"]):
             await db.close()
-            url = await run_in_thread(MediaStorage().signed_url, clip["file_path"], clip["filename"], attachment=download)
+            url = await run_in_thread(MediaStorage().signed_url, clip["file_path"], download_filename, attachment=download)
             return RedirectResponse(url, status_code=307, headers={"Cache-Control": "private, no-store"})
         clip_path = Path(clip["file_path"])
         if not clip_path.exists():
@@ -1121,7 +1132,7 @@ async def get_clip_file(
         return FileResponse(
             path=str(clip_path),
             media_type="video/mp4",
-            filename=clip["filename"],
+            filename=download_filename,
             content_disposition_type="attachment" if download else "inline",
             headers={"Cache-Control": "private, no-store"},
         )
@@ -1130,6 +1141,92 @@ async def get_clip_file(
     except Exception as e:
         logger.error(f"Error serving clip file: {e}")
         raise HTTPException(status_code=500, detail=f"Error serving clip file: {str(e)}")
+
+
+@router.post("/{task_id}/clips/{clip_id}/save-to-drive")
+async def save_clip_to_drive(
+    task_id: str,
+    clip_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db, scope="function"),
+):
+    """Upload a clip directly to Google Drive."""
+    try:
+        task_service = TaskService(db)
+        await _require_task_reader(request, task_service, db, task_id)
+        clip = await task_service.clip_repo.get_clip_by_id(db, clip_id)
+        if not clip or clip.get("task_id") != task_id:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        task = await task_service.task_repo.get_task_by_id(db, task_id)
+        source_title = (task or {}).get("source_title") or ((task or {}).get("source_metadata") or {}).get("title")
+        clip_order = clip.get("clip_order") or 1
+
+        target_path: Optional[Path] = None
+        target_filename: str = format_clip_filename(source_title, clip_order)
+
+        try:
+            content_type = request.headers.get("content-type", "")
+            if "application/json" in content_type.lower():
+                raw = await request.body()
+                if raw.strip():
+                    body = json.loads(raw.decode("utf-8"))
+                    export_id = body.get("export_id")
+                    if export_id:
+                        from ...repositories.clip_export_repository import ClipExportRepository
+                        row = await ClipExportRepository.get_for_task_clip(db, export_id, task_id, clip_id)
+                        if row and row.get("status") == "succeeded" and row.get("file_path"):
+                            target_path = Path(row["file_path"])
+                            preset = row.get("preset")
+                            target_filename = format_clip_filename(
+                                source_title,
+                                clip_order,
+                                preset=preset if preset != "original" else None,
+                            )
+        except Exception:
+            pass
+
+        if target_path is None or not target_path.exists():
+            file_path_str = clip.get("file_path")
+            if not file_path_str:
+                raise HTTPException(status_code=404, detail="Clip file not found")
+            storage = MediaStorage()
+            target_path = await run_in_thread(storage.local_path, file_path_str)
+
+        if not target_path.exists():
+            raise HTTPException(status_code=404, detail="Clip file not found on disk")
+
+        from ...services.auto_export_service import upload_to_google_drive, get_gdrive_access_token
+        import os
+
+        token = get_gdrive_access_token()
+        folder_id = os.getenv("GDRIVE_FOLDER_ID", "").strip()
+        if not token or not folder_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Google Drive is not configured. Please connect Google Drive first."
+            )
+
+        await db.close()
+
+        upload_result = await run_in_thread(upload_to_google_drive, target_path, target_filename)
+        if not upload_result or not upload_result.get("file_id"):
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to upload file to Google Drive. Check permissions or network connection."
+            )
+
+        return {
+            "success": True,
+            "file_id": upload_result["file_id"],
+            "name": upload_result.get("name", target_filename),
+            "web_view_link": upload_result.get("web_view_link"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving clip to Google Drive: {e}")
+        raise HTTPException(status_code=500, detail=f"Error saving clip to Google Drive: {str(e)}")
 
 
 async def _prepare_clip_archive(request: Request, db: AsyncSession, task_id: str):
@@ -1142,7 +1239,11 @@ async def _prepare_clip_archive(request: Request, db: AsyncSession, task_id: str
     await db.close()
     try:
         entries = await run_in_thread(
-            clip_archive.resolve_entries, clips, MediaStorage(), task.get("workflow")
+            clip_archive.resolve_entries,
+            clips,
+            MediaStorage(),
+            task.get("workflow"),
+            task.get("source_title"),
         )
     except STORAGE_ERRORS:
         logger.exception("Could not list clip files for task %s", task_id)
@@ -1471,7 +1572,10 @@ async def export_clip(
         if not clip or clip.get("task_id") != task_id:
             raise HTTPException(status_code=404, detail="Clip not found")
 
-        from pathlib import Path
+        task = await task_service.task_repo.get_task_by_id(db, task_id)
+        source_title = (task or {}).get("source_title") or ((task or {}).get("source_metadata") or {}).get("title")
+        clip_order = clip.get("clip_order") or 1
+        download_name = format_clip_filename(source_title, clip_order, preset=preset_name)
 
         # Release the DB connection before the (potentially multi-minute) ffmpeg
         # re-encode and file streaming below — see get_clip_file for why holding
@@ -1486,7 +1590,6 @@ async def export_clip(
             preset_name,
         )
 
-        download_name = f"{Path(clip['filename']).stem}_{preset_name}.mp4"
         return FileResponse(
             path=str(output_path), media_type="video/mp4", filename=download_name,
             background=BackgroundTask(output_path.unlink, missing_ok=True),

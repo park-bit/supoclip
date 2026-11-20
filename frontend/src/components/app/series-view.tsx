@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Copy, Download, Loader2, Play, RotateCcw, Scissors } from "lucide-react";
 import { ClipCover } from "@/components/app/clip-cover";
 import { DownloadAllButton } from "@/components/app/download-all-button";
-import { isPart, partTitle, type WallClip } from "@/components/app/clip-wall";
+import { GoogleDriveIcon, isPart, partTitle, type WallClip } from "@/components/app/clip-wall";
 import { Button } from "@/components/ui/button";
 import { getClipUrl } from "@/lib/clip-actions";
 import { useCopyText } from "@/lib/copy-text";
@@ -49,7 +49,7 @@ export function unfinishedSeries(
 
 export function SeriesView<C extends WallClip>({
   clips, plan, taskId, status, editable, busyId, downloadingAll, toolbar,
-  onOpen, onDownload, onDownloadAll, onResume, resumeDisabled, renderActions,
+  onOpen, onDownload, onDownloadAll, onResume, resumeDisabled, onSaveToDrive, savingDriveId, renderActions,
 }: {
   clips: C[];
   plan?: WorkflowPlan | null;
@@ -66,6 +66,8 @@ export function SeriesView<C extends WallClip>({
   onDownloadAll?: () => void;
   onResume?: () => void;
   resumeDisabled?: boolean;
+  onSaveToDrive?: (clip: C) => void;
+  savingDriveId?: string | null;
   /** Extra per-part actions (publishing). */
   renderActions?: (clip: C) => React.ReactNode;
 }) {
@@ -105,6 +107,8 @@ export function SeriesView<C extends WallClip>({
             busy={busyId === clip.id}
             onOpen={() => onOpen(clip)}
             onDownload={() => onDownload(clip)}
+            onSaveToDrive={onSaveToDrive ? () => onSaveToDrive(clip) : undefined}
+            isSavingToDrive={savingDriveId === clip.id}
             actions={renderActions?.(clip)}
           />
         ))}
@@ -113,7 +117,7 @@ export function SeriesView<C extends WallClip>({
   );
 }
 
-function SeriesPart({ clip, total, taskId, editable, busy, onOpen, onDownload, actions }: {
+function SeriesPart({ clip, total, taskId, editable, busy, onOpen, onDownload, onSaveToDrive, isSavingToDrive, actions }: {
   clip: WallClip;
   total: number;
   taskId: string;
@@ -121,6 +125,8 @@ function SeriesPart({ clip, total, taskId, editable, busy, onOpen, onDownload, a
   busy: boolean;
   onOpen: () => void;
   onDownload: () => void;
+  onSaveToDrive?: () => void;
+  isSavingToDrive?: boolean;
   actions?: React.ReactNode;
 }) {
   const t = useTranslations("task");
@@ -171,9 +177,15 @@ function SeriesPart({ clip, total, taskId, editable, busy, onOpen, onDownload, a
         )}
 
         <div className="mt-auto flex flex-wrap items-center gap-2 pt-3">
-          <Button size="sm" variant="outline" onClick={onDownload} disabled={busy} aria-label={t("downloadNamed", { title: label })}>
+          <Button size="sm" variant="outline" onClick={onDownload} disabled={busy || isSavingToDrive} aria-label={t("downloadNamed", { title: label })}>
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}{t("download")}
           </Button>
+          {onSaveToDrive && (
+            <Button size="sm" variant="outline" onClick={onSaveToDrive} disabled={busy || isSavingToDrive} aria-label={`Save ${label} to Google Drive`}>
+              {isSavingToDrive ? <Loader2 className="size-4 animate-spin" /> : <GoogleDriveIcon className="size-4" />}
+              {isSavingToDrive ? "Saving..." : "Save to Drive"}
+            </Button>
+          )}
           {editable && (
             <Button size="sm" variant="outline" asChild>
               <Link href={`/tasks/${taskId}/edit?clip=${clip.id}`}><Scissors className="size-4" />{t("edit")}</Link>

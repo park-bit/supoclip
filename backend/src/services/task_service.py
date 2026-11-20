@@ -13,6 +13,7 @@ import asyncio
 import copy
 import json
 import hashlib
+import os
 from time import perf_counter
 
 
@@ -44,6 +45,7 @@ from ..clip_duration import clip_duration, validate_clip_length
 from ..ai import TRANSCRIPT_ANALYSIS_CACHE_VERSION
 from ..clip_source_map import load_clip_caption_settings, normalize_source_ranges, source_range_bounds
 from ..media.timeline import seconds_to_mmss
+from ..media.naming import format_clip_filename
 from ..workflows.boundaries import cleanup_key
 from ..workflows.contracts import OUTLINE_VERSION, WorkflowSpec, workflow_spec_from_task
 from ..workflows.errors import WorkflowError
@@ -542,6 +544,9 @@ class TaskService(ClipEditingMixin):
             cached_transcript = (
                 cache_entry.get("transcript_text") if cache_entry else None
             )
+            if cached_transcript and len(cached_transcript.splitlines()) <= 1:
+                cached_transcript = None
+
             analysis_entry = (
                 cache_entry
                 if analysis_cache_key == cache_key
@@ -550,6 +555,19 @@ class TaskService(ClipEditingMixin):
             cached_analysis_json = (
                 analysis_entry.get("analysis_json") if analysis_entry else None
             )
+            if cached_analysis_json:
+                try:
+                    parsed_aj = json.loads(cached_analysis_json)
+                    aj_segs = parsed_aj.get("most_relevant_segments") or []
+                    if aj_segs and all(
+                        s.get("hook_type") == "fallback"
+                        or "AI analysis did not identify" in str(s.get("reasoning", ""))
+                        for s in aj_segs
+                        if isinstance(s, dict)
+                    ):
+                        cached_analysis_json = None
+                except Exception:
+                    pass
             # Performance loop: feed this creator's real audience data back into
             # clip selection. Personalized analyses bypass the shared analysis
             # cache so one creator's history never shapes another's clips.
@@ -705,7 +723,22 @@ class TaskService(ClipEditingMixin):
                     else None
                 ),
             )
-            if not performance_context and analysis_cache_key != cache_key:
+            is_fallback = False
+            if result.get("analysis_json"):
+                try:
+                    parsed_aj = json.loads(result["analysis_json"])
+                    aj_segs = parsed_aj.get("most_relevant_segments") or []
+                    if aj_segs and all(
+                        s.get("hook_type") == "fallback"
+                        or "AI analysis did not identify" in str(s.get("reasoning", ""))
+                        for s in aj_segs
+                        if isinstance(s, dict)
+                    ):
+                        is_fallback = True
+                except Exception:
+                    pass
+
+            if not performance_context and analysis_cache_key != cache_key and not is_fallback:
                 await self.cache_repo.upsert_cache(
                     self.db,
                     cache_key=analysis_cache_key,
@@ -840,11 +873,14 @@ class TaskService(ClipEditingMixin):
                 async with self._processing_transaction(task_id):
                     await check_cancelled()
                     clip_order = max(clip_ids_by_order, default=0) + 1
+                    source_title = task_row.get("source_title") or (task_row.get("source_metadata") or {}).get("title")
+                    clip_filename = format_clip_filename(source_title, clip_order)
+
                     # Save to DB immediately
                     clip_id = await self.clip_repo.create_clip(
                         self.db,
                         task_id=task_id,
-                        filename=clip_info["filename"],
+                        filename=clip_filename,
                         file_path=clip_info["path"],
                         start_time=clip_info["start_time"],
                         end_time=clip_info["end_time"],
@@ -874,6 +910,17 @@ class TaskService(ClipEditingMixin):
                 pending_clip_path = None
                 clip_ids_by_order[clip_order] = clip_id
                 completed_positions.add(i + 1)
+
+                try:
+                    from .auto_export_service import process_post_export
+                    if os.getenv("AUTO_EXPORT_GENERATED_CLIPS", "true").lower() in ("true", "1", "yes"):
+                        await run_in_thread(
+                            process_post_export,
+                            Path(clip_info["path"]),
+                            clip_filename,
+                        )
+                except Exception as auto_exp_err:
+                    logger.warning("Auto export of generated clip failed: %s", auto_exp_err)
 
                 # Notify frontend via SSE
                 if clip_ready_callback:

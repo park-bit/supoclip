@@ -93,7 +93,7 @@ services:
     healthcheck:
       # Exercise Better Auth and Prisma, not only the static landing page.
       test: ["CMD", "curl", "-f", "http://localhost:3107/api/auth/get-session"]
-      interval: 30s
+      interval: 60s
       timeout: 10s
       retries: 5
       start_period: 60s
@@ -118,10 +118,24 @@ services:
       - clips:/app/clips
       - ./backend/fonts:/app/fonts
       - ./backend/transitions:/app/transitions
+      - ./exports:/app/exports
+      - ../exports:/exports
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - SUPOCLIP_SERVICE=backend
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - USE_NVENC=${USE_NVENC:-true}
+      - LOCAL_EXPORT_DIR=${LOCAL_EXPORT_DIR:-/app/exports}
+      - GDRIVE_ENABLED=${GDRIVE_ENABLED:-true}
+      - GDRIVE_FOLDER_ID=${GDRIVE_FOLDER_ID:-}
+      - GDRIVE_SERVICE_ACCOUNT_JSON=${GDRIVE_SERVICE_ACCOUNT_JSON:-}
+      - GDRIVE_SERVICE_ACCOUNT_KEY=${GDRIVE_SERVICE_ACCOUNT_KEY:-}
+      - GDRIVE_CLIENT_ID=${GDRIVE_CLIENT_ID:-}
+      - GDRIVE_CLIENT_SECRET=${GDRIVE_CLIENT_SECRET:-}
+      - GDRIVE_REFRESH_TOKEN=${GDRIVE_REFRESH_TOKEN:-}
+      - GDRIVE_ACCESS_TOKEN=${GDRIVE_ACCESS_TOKEN:-}
       - POSTHOG_PROJECT_TOKEN=${POSTHOG_PROJECT_TOKEN:-}
       - POSTHOG_HOST=${POSTHOG_HOST:-https://eu.i.posthog.com}
       - DATABASE_URL=postgresql+asyncpg://supoclip:supoclip_password@postgres:5432/supoclip
@@ -192,6 +206,9 @@ services:
       - OPENROUTER_FALLBACK_MODEL=${OPENROUTER_FALLBACK_MODEL:-openai/gpt-6-luna}
       - RERANK_LLM=${RERANK_LLM:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-${GOOGLE_API_KEY}}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-qwen/qwen3.8-27b}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - AI_EDIT_MODEL=${AI_EDIT_MODEL:-claude-sonnet-5-5}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
@@ -199,9 +216,9 @@ services:
       - TRANSCRIPTION_PROVIDER=${TRANSCRIPTION_PROVIDER:-assemblyai}
       - TRANSCRIPTION_LANGUAGE=${TRANSCRIPTION_LANGUAGE:-}
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-medium}
-      - MAX_VIDEO_DURATION=${MAX_VIDEO_DURATION:-5400}
-      - PRO_YOUTUBE_MAX_VIDEO_DURATION=${PRO_YOUTUBE_MAX_VIDEO_DURATION:-5400}
-      - SCALE_YOUTUBE_MAX_VIDEO_DURATION=${SCALE_YOUTUBE_MAX_VIDEO_DURATION:-10800}
+      - MAX_VIDEO_DURATION=${MAX_VIDEO_DURATION:-0}
+      - PRO_YOUTUBE_MAX_VIDEO_DURATION=${PRO_YOUTUBE_MAX_VIDEO_DURATION:-0}
+      - SCALE_YOUTUBE_MAX_VIDEO_DURATION=${SCALE_YOUTUBE_MAX_VIDEO_DURATION:-0}
       - MAX_VIDEO_UPLOAD_BYTES=${MAX_VIDEO_UPLOAD_BYTES:-4000000000}
       - QUEUED_TASK_TIMEOUT_SECONDS=${QUEUED_TASK_TIMEOUT_SECONDS:-180}
       - DEFAULT_PROCESSING_MODE=${DEFAULT_PROCESSING_MODE:-fast}
@@ -255,6 +272,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/db"]
       interval: 30s
@@ -308,10 +332,24 @@ services:
       - clips:/app/clips
       - ./backend/fonts:/app/fonts
       - ./backend/transitions:/app/transitions
+      - ./exports:/app/exports
+      - ../exports:/exports
     environment: &worker-environment
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - SUPOCLIP_SERVICE=worker
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - USE_NVENC=${USE_NVENC:-true}
+      - LOCAL_EXPORT_DIR=${LOCAL_EXPORT_DIR:-/app/exports}
+      - GDRIVE_ENABLED=${GDRIVE_ENABLED:-true}
+      - GDRIVE_FOLDER_ID=${GDRIVE_FOLDER_ID:-}
+      - GDRIVE_SERVICE_ACCOUNT_JSON=${GDRIVE_SERVICE_ACCOUNT_JSON:-}
+      - GDRIVE_SERVICE_ACCOUNT_KEY=${GDRIVE_SERVICE_ACCOUNT_KEY:-}
+      - GDRIVE_CLIENT_ID=${GDRIVE_CLIENT_ID:-}
+      - GDRIVE_CLIENT_SECRET=${GDRIVE_CLIENT_SECRET:-}
+      - GDRIVE_REFRESH_TOKEN=${GDRIVE_REFRESH_TOKEN:-}
+      - GDRIVE_ACCESS_TOKEN=${GDRIVE_ACCESS_TOKEN:-}
       - POSTHOG_PROJECT_TOKEN=${POSTHOG_PROJECT_TOKEN:-}
       - POSTHOG_HOST=${POSTHOG_HOST:-https://eu.i.posthog.com}
       - DATABASE_URL=postgresql+asyncpg://supoclip:supoclip_password@postgres:5432/supoclip
@@ -382,6 +420,9 @@ services:
       - OPENROUTER_FALLBACK_MODEL=${OPENROUTER_FALLBACK_MODEL:-openai/gpt-6-luna}
       - RERANK_LLM=${RERANK_LLM:-}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-${GOOGLE_API_KEY}}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-qwen/qwen3.8-27b}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - AI_EDIT_MODEL=${AI_EDIT_MODEL:-claude-sonnet-5-5}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
@@ -389,9 +430,9 @@ services:
       - TRANSCRIPTION_PROVIDER=${TRANSCRIPTION_PROVIDER:-assemblyai}
       - TRANSCRIPTION_LANGUAGE=${TRANSCRIPTION_LANGUAGE:-}
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-medium}
-      - MAX_VIDEO_DURATION=${MAX_VIDEO_DURATION:-5400}
-      - PRO_YOUTUBE_MAX_VIDEO_DURATION=${PRO_YOUTUBE_MAX_VIDEO_DURATION:-5400}
-      - SCALE_YOUTUBE_MAX_VIDEO_DURATION=${SCALE_YOUTUBE_MAX_VIDEO_DURATION:-10800}
+      - MAX_VIDEO_DURATION=${MAX_VIDEO_DURATION:-0}
+      - PRO_YOUTUBE_MAX_VIDEO_DURATION=${PRO_YOUTUBE_MAX_VIDEO_DURATION:-0}
+      - SCALE_YOUTUBE_MAX_VIDEO_DURATION=${SCALE_YOUTUBE_MAX_VIDEO_DURATION:-0}
       - MAX_VIDEO_UPLOAD_BYTES=${MAX_VIDEO_UPLOAD_BYTES:-4000000000}
       - QUEUED_TASK_TIMEOUT_SECONDS=${QUEUED_TASK_TIMEOUT_SECONDS:-180}
       - DEFAULT_PROCESSING_MODE=${DEFAULT_PROCESSING_MODE:-fast}
@@ -445,6 +486,13 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
     healthcheck:
       test: ["CMD", ".venv/bin/arq", "--check", "src.workers.tasks.WorkerSettings"]
@@ -475,6 +523,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", ".venv/bin/arq", "--check", "src.workers.ai_worker.AIWorkerSettings"]
       interval: 30s

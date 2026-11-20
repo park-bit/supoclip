@@ -1170,10 +1170,18 @@ class VideoService:
             try:
                 cached_analysis = json.loads(cached_analysis_json)
                 segments = cached_analysis.get("most_relevant_segments", [])
-                if not segments and not (checkpoint.get("candidates") or checkpoint.get("segments")):
+                has_only_fallback = bool(segments) and all(
+                    s.get("hook_type") == "fallback"
+                    or "AI analysis did not identify" in str(s.get("reasoning", ""))
+                    for s in segments
+                    if isinstance(s, dict)
+                )
+                if has_only_fallback or (not segments and not (checkpoint.get("candidates") or checkpoint.get("segments"))):
                     logger.info(
-                        "Ignoring cached transcript analysis with no clip segments"
+                        "Ignoring cached transcript analysis with fallback or no clip segments"
                     )
+                    cached_analysis_json = None
+                    relevant_parts = None
                 else:
 
                     class _SimpleResult:
@@ -1227,7 +1235,15 @@ class VideoService:
 
         raw_segments = relevant_parts.most_relevant_segments
         prepared_segments = checkpoint.get("segments") or checkpoint.get("candidates")
-        final_plan = bool(checkpoint.get("segments"))
+        if prepared_segments and all(
+            s.get("hook_type") == "fallback"
+            or "AI analysis did not identify" in str(s.get("reasoning", ""))
+            for s in prepared_segments
+            if isinstance(s, dict)
+        ):
+            logger.info("Ignoring checkpoint containing fallback clip segment")
+            prepared_segments = None
+        final_plan = bool(checkpoint.get("segments")) and prepared_segments is not None
         segments_json: List[Dict[str, Any]] = list(prepared_segments or [])
         transcript_data = load_cached_transcript_data(video_path)
         for segment in ([] if prepared_segments else raw_segments):
@@ -1399,7 +1415,7 @@ class VideoService:
                 if video_info:
                     duration = video_info.get("duration", 0)
                     source_duration = duration or None
-                    if duration and duration > duration_limit:
+                    if duration and duration_limit > 0 and duration > duration_limit:
                         mins = duration_limit // 60
                         raise Exception(
                             f"Video is too long ({duration // 60} min). "
@@ -1484,7 +1500,7 @@ class VideoService:
 
             # Post-download duration guard (catches cases where preflight info was unavailable)
             file_duration = VideoService._get_file_duration(video_path)
-            if file_duration and file_duration > duration_limit:
+            if file_duration and duration_limit > 0 and file_duration > duration_limit:
                 mins = duration_limit // 60
                 raise Exception(
                     f"Video is too long ({int(file_duration) // 60} min). "
@@ -1521,14 +1537,21 @@ class VideoService:
                     await run_in_thread(temporary.replace, sidecar)
                 finally:
                     temporary.unlink(missing_ok=True)
-            # Database text alone cannot recreate timed captions or cleanup.
-            # Repair older caches whose word-timing sidecar was removed.
+            # If transcript is missing, untimed, or collapsed into a single line (from older cache bugs),
+            # re-derive it from disk cache or re-transcribe.
+            cached_transcript_data = await run_in_thread(load_cached_transcript_data, video_path)
+            if cached_transcript_data and (not transcript or len(transcript.splitlines()) <= 1):
+                from ..media.transcription import format_transcript_for_analysis
+                formatted_lines = format_transcript_for_analysis(cached_transcript_data)
+                if len(formatted_lines) > 1 or not transcript:
+                    transcript = "\n".join(formatted_lines)
+
             needs_word_timings = (
                 bool(transcript)
                 and getattr(runtime_config, "transcription_provider", "assemblyai") != "youtube_captions"
-                and not (load_cached_transcript_data(video_path) or {}).get("words")
+                and not (cached_transcript_data or {}).get("words")
             )
-            if not transcript or needs_word_timings:
+            if not transcript or len(transcript.splitlines()) <= 1 or needs_word_timings:
                 transcript = await VideoService.generate_transcript(
                     video_path,
                     processing_mode=processing_mode,

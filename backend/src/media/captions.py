@@ -234,6 +234,8 @@ def hex_to_ass_color(
 def escape_ass_text(value: str) -> str:
     return (
         str(value)
+        .replace("\u0964", "")
+        .replace("\u0965", "")
         .replace("\\", "\\\\")
         .replace("{", "\\{")
         .replace("}", "\\}")
@@ -417,6 +419,8 @@ def build_hook_title_ass(
     outline/backing for contrast, power words and numbers in the template's
     highlight colour, and a quick fade+pop entrance.
     """
+    from .romanize import romanize_text
+    hook_title = romanize_text(hook_title)
     uppercase = bool(template.get("uppercase"))
     title_text = hook_title.upper() if uppercase else hook_title
 
@@ -613,6 +617,24 @@ def build_assemblyai_ass_subtitles(
     if not relevant_words and not hook_title and not point_labels:
         logger.warning("No words or hook title available for ASS subtitles")
         return False
+
+    from .romanize import romanize_text, romanize_word, strip_devanagari_full_stops
+    if hook_title:
+        hook_title = strip_devanagari_full_stops(romanize_text(hook_title))
+    if point_labels:
+        for label in point_labels:
+            if isinstance(label, dict) and "text" in label:
+                label["text"] = strip_devanagari_full_stops(romanize_text(str(label["text"])))
+    cleaned_words = []
+    for word in relevant_words:
+        if isinstance(word, dict) and "text" in word:
+            word_text = strip_devanagari_full_stops(romanize_word(str(word["text"])))
+            word["text"] = word_text
+            if word_text:
+                cleaned_words.append(word)
+        else:
+            cleaned_words.append(word)
+    relevant_words = cleaned_words
 
     effective_font_family, template = ensure_glyph_coverage(
         effective_font_family,

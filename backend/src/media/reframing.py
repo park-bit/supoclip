@@ -4,6 +4,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Sequence
 from pathlib import Path
 from typing import Tuple
 import cv2
@@ -540,7 +541,7 @@ def cluster_two_face_regions(
 
     left = region(left_faces)
     right = region(right_faces)
-    if abs(right["center_x"] - left["center_x"]) < width * 0.15:
+    if abs(right["center_x"] - left["center_x"]) < width * 0.08:
         return None
     return {"left": left, "right": right}
 
@@ -582,37 +583,23 @@ def build_pan_expression(
 def detect_speaker_reframe_plan(
     clip_path: Path,
     output_format: str,
+    speaker_turns: Optional[Sequence[Dict[str, Any]]] = None,
+    speaker_words: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build a speaker-aware pan or split-screen plan for a trimmed clip."""
     try:
         width, height = ffprobe_video_size(clip_path)
-        if width / max(height, 1) <= 1.2:
-            return None
-
-        scene_cuts = count_scene_cuts(clip_path)
-        if scene_cuts > 2:
-            logger.info("Skipping speaker reframe: %d scene cuts detected", scene_cuts)
+        if width / max(height, 1) <= 1.05:
             return None
 
         duration = ffprobe_duration(clip_path)
-        face_centers = detect_faces_in_clip(clip_path, 0, min(duration, 12.0))
-        regions = cluster_two_face_regions(face_centers, width, height)
-        if not regions:
-            return None
-
         crop_w = round_to_even(min(width, int(height * 9 / 16)))
-        left_x = clamp_even(
-            regions["left"]["center_x"] - crop_w // 2,
-            0,
-            max(0, width - crop_w),
-        )
-        right_x = clamp_even(
-            regions["right"]["center_x"] - crop_w // 2,
-            0,
-            max(0, width - crop_w),
-        )
+        face_centers = detect_faces_in_clip(clip_path, 0, duration)
+        regions = cluster_two_face_regions(face_centers, width, height) if face_centers else None
 
         if output_format == "vertical_split":
+            if not regions:
+                return None
             return {
                 "mode": "split",
                 "width": width,
@@ -620,52 +607,84 @@ def detect_speaker_reframe_plan(
                 "regions": regions,
             }
 
-        with tempfile.TemporaryDirectory(prefix="supoclip_motion_") as motion_dir:
-            left_motion = Path(motion_dir) / "left.txt"
-            right_motion = Path(motion_dir) / "right.txt"
-            left = regions["left"]
-            right = regions["right"]
-            filter_complex = (
-                f"[0:v]split=2[l][r];"
-                f"[l]crop={left['roi_w']}:{left['roi_h']}:{left['roi_x']}:{left['roi_y']},"
-                f"format=gray,tblend=all_mode=difference,signalstats,"
-                f"metadata=mode=print:key=lavfi.signalstats.YAVG:file={ffmpeg_escape_filter_path(left_motion)}[lo];"
-                f"[r]crop={right['roi_w']}:{right['roi_h']}:{right['roi_x']}:{right['roi_y']},"
-                f"format=gray,tblend=all_mode=difference,signalstats,"
-                f"metadata=mode=print:key=lavfi.signalstats.YAVG:file={ffmpeg_escape_filter_path(right_motion)}[ro]"
+        # For vertical_pan:
+        if regions:
+            left_x = clamp_even(
+                regions["left"]["center_x"] - crop_w // 2,
+                0,
+                max(0, width - crop_w),
             )
-            result = run_ffmpeg_command(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(clip_path),
-                    "-filter_complex",
-                    filter_complex,
-                    "-map",
-                    "[lo]",
-                    "-f",
-                    "null",
-                    "-",
-                    "-map",
-                    "[ro]",
-                    "-f",
-                    "null",
-                    "-",
-                ],
-                timeout=300,
+            right_x = clamp_even(
+                regions["right"]["center_x"] - crop_w // 2,
+                0,
+                max(0, width - crop_w),
             )
-            if result.returncode != 0:
-                return None
-            times, left_values = parse_motion_metadata(left_motion)
-            _, right_values = parse_motion_metadata(right_motion)
-            timeline = build_speaker_timeline_from_motion(
-                times,
-                left_values,
-                right_values,
-            )
-            if len(timeline) < 2:
-                return None
+        else:
+            cx = int(np.median([f[0] for f in face_centers])) if face_centers else width // 2
+            left_x = clamp_even(cx - crop_w // 2, 0, max(0, width - crop_w))
+            right_x = left_x
+
+        timeline: List[Dict[str, Any]] = []
+
+        # If diarization turns are available, drive the pan directly from speech timing
+        if speaker_turns and len(speaker_turns) >= 2 and left_x != right_x:
+            speakers = list(dict.fromkeys(str(t["speaker"]) for t in speaker_turns if t.get("speaker") is not None))
+            if len(speakers) >= 2:
+                spk_left = speakers[0]
+                for turn in speaker_turns:
+                    t_spk = str(turn.get("speaker", ""))
+                    timeline.append({
+                        "start": max(0.0, float(turn.get("start", 0))),
+                        "end": min(duration, float(turn.get("end", duration))),
+                        "speaker": "left" if t_spk == spk_left else "right",
+                    })
+
+        # Fallback to mouth/face motion detection if diarization didn't provide a multi-speaker timeline
+        if not timeline and regions and left_x != right_x:
+            try:
+                with tempfile.TemporaryDirectory(prefix="supoclip_motion_") as motion_dir:
+                    left_motion = Path(motion_dir) / "left.txt"
+                    right_motion = Path(motion_dir) / "right.txt"
+                    left = regions["left"]
+                    right = regions["right"]
+                    filter_complex = (
+                        f"[0:v]split=2[l][r];"
+                        f"[l]crop={left['roi_w']}:{left['roi_h']}:{left['roi_x']}:{left['roi_y']},"
+                        f"format=gray,tblend=all_mode=difference,signalstats,"
+                        f"metadata=mode=print:key=lavfi.signalstats.YAVG:file={ffmpeg_escape_filter_path(left_motion)}[lo];"
+                        f"[r]crop={right['roi_w']}:{right['roi_h']}:{right['roi_x']}:{right['roi_y']},"
+                        f"format=gray,tblend=all_mode=difference,signalstats,"
+                        f"metadata=mode=print:key=lavfi.signalstats.YAVG:file={ffmpeg_escape_filter_path(right_motion)}[ro]"
+                    )
+                    result = run_ffmpeg_command(
+                        [
+                            "ffmpeg", "-y", "-i", str(clip_path),
+                            "-filter_complex", filter_complex,
+                            "-map", "[lo]", "-f", "null", "-",
+                            "-map", "[ro]", "-f", "null", "-",
+                        ],
+                        timeout=120,
+                    )
+                    if result.returncode == 0:
+                        times, left_values = parse_motion_metadata(left_motion)
+                        _, right_values = parse_motion_metadata(right_motion)
+                        timeline = build_speaker_timeline_from_motion(times, left_values, right_values)
+            except Exception as exc:
+                logger.debug("Motion metadata extraction failed: %s", exc)
+
+        # If still only 1 segment or motion was subtle, alternate smoothly between speakers across the clip
+        if (not timeline or len(timeline) < 2) and left_x != right_x and duration > 3.0:
+            step = max(3.0, min(8.0, duration / 4.0))
+            timeline = []
+            cur_t = 0.0
+            cur_side = "left"
+            while cur_t < duration:
+                next_t = min(duration, cur_t + step)
+                timeline.append({"start": cur_t, "end": next_t, "speaker": cur_side})
+                cur_side = "right" if cur_side == "left" else "left"
+                cur_t = next_t
+
+        x_expression = build_pan_expression(timeline, left_x, right_x) if timeline else str(left_x)
 
         return {
             "mode": "pan",
@@ -673,7 +692,7 @@ def detect_speaker_reframe_plan(
             "height": height,
             "crop_w": crop_w,
             "crop_h": height,
-            "x_expression": build_pan_expression(timeline, left_x, right_x),
+            "x_expression": x_expression,
             "timeline": timeline,
         }
     except Exception as exc:
@@ -1767,7 +1786,11 @@ def render_reframed_clip_ffmpeg(
         plan = speaker_plan
     else:
         plan = (
-            detect_speaker_reframe_plan(input_path, output_format)
+            detect_speaker_reframe_plan(
+                input_path, output_format,
+                speaker_turns=speaker_turns,
+                speaker_words=speaker_words,
+            )
             if output_format in {"vertical_pan", "vertical_split"}
             else None
         )

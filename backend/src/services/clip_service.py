@@ -23,6 +23,7 @@ from ..video_utils import VALID_OUTPUT_FORMATS, parse_timestamp_to_seconds, crea
 from ..utils.async_helpers import run_in_thread
 from ..clip_duration import clip_duration, normalize_clip_length
 from ..media.common import MAX_RENDERED_CLIP_SECONDS
+from ..media.naming import format_clip_filename
 from ..clip_cleanup import normalize_clip_cleanup_settings
 from ..broll import broll_overlays_for, shift_broll_placements
 from ..clip_source_map import (
@@ -393,6 +394,8 @@ class ClipEditingMixin:
             raise ValueError("Could not regenerate the clips. Your existing clips are unchanged.")
 
         await self.clip_repo.delete_clips_by_task(self.db, task_id)
+        task_record = await self.task_repo.get_task_by_id(self.db, task_id) or {}
+        source_title = task_record.get("source_title") or (task_record.get("source_metadata") or {}).get("title")
 
         clip_ids = []
         for i, clip_info in enumerate(clips_info):
@@ -419,10 +422,12 @@ class ClipEditingMixin:
                     "part_number": segment.get("part_number"),
                     "workflow_meta": meta,
                 }
+            clip_order = i + 1
+            clip_filename = format_clip_filename(source_title, clip_order)
             clip_id = await self.clip_repo.create_clip(
                 self.db,
                 task_id=task_id,
-                filename=clip_info["filename"],
+                filename=clip_filename,
                 file_path=clip_info["path"],
                 start_time=clip_info["start_time"],
                 end_time=clip_info["end_time"],

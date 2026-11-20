@@ -358,6 +358,11 @@ def base_proxy_params(task_id: Optional[str] = None, video_id: Optional[str] = N
         "quiet": True,
         "no_warnings": False,
         "overwrites": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "web"],
+            },
+        },
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -368,9 +373,7 @@ def base_proxy_params(task_id: Optional[str] = None, video_id: Optional[str] = N
     }
     pot_url = (getattr(runtime, "youtube_pot_provider_url", "") or "").strip()
     if pot_url:
-        params["extractor_args"] = {
-            "youtubepot-bgutilhttp": {"base_url": [pot_url]},
-        }
+        params["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [pot_url]}
     if shutil.which("deno"):
         # yt-dlp needs a JS runtime for YouTube's player challenge. Prefer the
         # deno binary installed in the image; do not pin a player client.
