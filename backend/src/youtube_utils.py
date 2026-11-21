@@ -7,11 +7,13 @@ import asyncio
 from datetime import datetime
 import logging
 import json
+import os
+import shutil
 import uuid
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -53,21 +55,32 @@ YOUTUBE_DATA_API_URL = "https://www.googleapis.com/youtube/v3/videos"
 class YouTubeDownloader:
     """Enhanced YouTube downloader with optimized settings."""
 
-    def __init__(self):
-        self.temp_dir = Path(get_config().temp_dir)
+    def __init__(self, temp_dir: Optional[Union[str, Path]] = None):
+        if temp_dir is not None:
+            self.temp_dir = Path(temp_dir)
+        else:
+            self.temp_dir = Path(get_config().temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
     def get_optimal_download_options(
         self,
         video_id: str,
         max_height: Optional[int] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Get optimal yt-dlp options for high-quality downloads.
 
         ``max_height`` caps the video height for plans with a lower output
         resolution, falling back to the best stream if nothing fits.
+        ``start_time`` and ``end_time`` download only the specified range.
         """
-        output_path = self.temp_dir / f"{video_id}.%(ext)s"
+        if start_time is not None or end_time is not None:
+            s_int = int(start_time or 0)
+            e_int = int(end_time or 0)
+            output_path = self.temp_dir / f"{video_id}_{s_int}_{e_int}.%(ext)s"
+        else:
+            output_path = self.temp_dir / f"{video_id}.%(ext)s"
 
         opts = {
             "outtmpl": str(output_path),
@@ -110,6 +123,34 @@ class YouTubeDownloader:
                 },
             },
         }
+
+        if start_time is not None or end_time is not None:
+            s = float(start_time or 0)
+            e = float(end_time) if end_time is not None else None
+
+            def _download_range_func(info_dict, ydl):
+                duration = info_dict.get("duration") or 0
+                return [{"start_time": s, "end_time": e if e is not None else duration}]
+
+            opts["download_ranges"] = _download_range_func
+            opts["force_keyframes_at_cuts"] = True
+
+        if not shutil.which("ffmpeg"):
+            try:
+                import imageio_ffmpeg
+                exe = imageio_ffmpeg.get_ffmpeg_exe()
+                ffmpeg_dir = str(Path(exe).parent)
+                target = Path(ffmpeg_dir) / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+                if not target.exists():
+                    try:
+                        shutil.copyfile(exe, str(target))
+                    except Exception:
+                        pass
+                if ffmpeg_dir not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+                opts["ffmpeg_location"] = ffmpeg_dir
+            except Exception:
+                pass
 
         return opts
 
@@ -608,6 +649,8 @@ def _download_youtube_video_with_ytdlp(
     max_retries: int = 3,
     task_id: Optional[str] = None,
     quality: Optional[str] = None,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
 ) -> Optional[Path]:
     """
     Download YouTube video with optimized settings and retry logic.
@@ -631,19 +674,34 @@ def _download_youtube_video_with_ytdlp(
             logger.info("Download attempt %s/%s", attempt + 1, max_retries)
 
             ydl_opts = downloader.get_optimal_download_options(
-                video_id, int(quality) if quality else None
+                video_id,
+                int(quality) if quality else None,
+                start_time=start_time,
+                end_time=end_time,
             )
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
 
-            logger.info(f"Searching for downloaded file: {video_id}.*")
+            search_prefix = (
+                f"{video_id}_{int(start_time or 0)}_{int(end_time or 0)}.*"
+                if (start_time is not None or end_time is not None)
+                else f"{video_id}.*"
+            )
+            logger.info(f"Searching for downloaded file: {search_prefix}")
             downloaded_files = [
                 file_path
-                for file_path in downloader.temp_dir.glob(f"{video_id}.*")
+                for file_path in downloader.temp_dir.glob(search_prefix)
                 if file_path.is_file()
                 and file_path.suffix.lower() in [".mp4", ".mkv", ".webm"]
             ]
+            if not downloaded_files and (start_time is not None or end_time is not None):
+                downloaded_files = [
+                    file_path
+                    for file_path in downloader.temp_dir.glob(f"{video_id}*")
+                    if file_path.is_file()
+                    and file_path.suffix.lower() in [".mp4", ".mkv", ".webm"]
+                ]
             if downloaded_files:
                 ranked_files = []
                 for candidate in downloaded_files:
@@ -745,6 +803,8 @@ def download_youtube_video(
     budget: Optional[ByteBudget] = None,
     skip_proxy: bool = False,
     errors: Optional[list[str]] = None,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
 ) -> Optional[Path]:
     """
     Download a full YouTube video using the configured provider chain.
@@ -794,7 +854,14 @@ def download_youtube_video(
                     timeout_seconds=config.rapidapi_youtube_timeout_seconds,
                 )
             elif provider == YOUTUBE_DOWNLOAD_PROVIDER_YTDLP:
-                downloaded_path = _download_youtube_video_with_ytdlp(url, max_retries, task_id, quality)
+                downloaded_path = _download_youtube_video_with_ytdlp(
+                    url,
+                    max_retries,
+                    task_id,
+                    quality,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
             else:
                 downloaded_path = download_youtube_video_with_apify(url, video_id, quality)
         except DownloadBudgetExceeded as exc:
@@ -858,6 +925,8 @@ async def async_download_youtube_video(
     *,
     budget: Optional[ByteBudget] = None,
     skip_proxy: bool = False,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
 ) -> Optional[Path]:
     logger.info(f"Starting async YouTube download: {url}")
     return await asyncio.to_thread(
@@ -868,6 +937,8 @@ async def async_download_youtube_video(
         quality,
         budget=budget,
         skip_proxy=skip_proxy,
+        start_time=start_time,
+        end_time=end_time,
     )
 
 

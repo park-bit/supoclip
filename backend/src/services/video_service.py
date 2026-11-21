@@ -670,6 +670,8 @@ class VideoService:
         errors: Optional[list] = None,
         progress_callback: Optional[ProgressCallback] = None,
         download_progress: int = 10,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
     ) -> Optional[Path]:
         """
         Download YouTube media for rendering.
@@ -716,11 +718,24 @@ class VideoService:
                         exc,
                     )
                     report_download_recovery(DownloadRecovery.FULL_VIDEO)
+
+            cache_id = (
+                f"{video_id}_{int(start_time or 0)}_{int(end_time or 0)}"
+                if (start_time is not None or end_time is not None)
+                else video_id
+            )
             path = resolve_full_youtube_download(
                 url,
-                video_id,
+                cache_id,
                 lambda **kwargs: download_youtube_video(
-                    url, 3, task_id, quality, errors=errors, **kwargs
+                    url,
+                    3,
+                    task_id,
+                    quality,
+                    errors=errors,
+                    start_time=start_time,
+                    end_time=end_time,
+                    **kwargs,
                 ),
                 task_id=task_id,
                 budget=job_budget,
@@ -1352,6 +1367,8 @@ class VideoService:
         checkpoint: Optional[Dict[str, Any]] = None,
         checkpoint_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         *,
+        clip_start_time: Optional[float] = None,
+        clip_end_time: Optional[float] = None,
         workflow_spec: Optional[WorkflowSpec] = None,
         plan_cache: Optional[PlanCache] = None,
         outline_cache_key: Optional[str] = None,
@@ -1412,13 +1429,20 @@ class VideoService:
                     video_info = None
                     logger.warning("YouTube metadata timed out; trying saved media and download providers")
                 source_duration = None
+                has_custom_range = (clip_start_time is not None or clip_end_time is not None)
                 if video_info:
                     duration = video_info.get("duration", 0)
                     source_duration = duration or None
-                    if duration and duration_limit > 0 and duration > duration_limit:
+                    check_duration = duration
+                    if has_custom_range and duration:
+                        effective_s = float(clip_start_time or 0)
+                        effective_e = min(float(clip_end_time), float(duration)) if clip_end_time is not None else float(duration)
+                        check_duration = max(0.0, effective_e - effective_s)
+                    if check_duration and duration_limit > 0 and check_duration > duration_limit:
                         mins = duration_limit // 60
+                        unit_str = "Selected range" if has_custom_range else "Video"
                         raise Exception(
-                            f"Video is too long ({duration // 60} min). "
+                            f"{unit_str} is too long ({int(check_duration) // 60} min). "
                             f"Maximum allowed duration is {mins} minutes."
                         )
 
@@ -1427,9 +1451,26 @@ class VideoService:
                     await run_in_thread(cached_full_media, video_id, download_quality)
                     if video_id else None
                 )
+                if has_custom_range:
+                    # User requested specific timestamp window: download only that section.
+                    audio_first = False
+                    range_key = f"{video_id}_{int(clip_start_time or 0)}_{int(clip_end_time or 0)}" if video_id else None
+                    cached_range = (
+                        await run_in_thread(cached_full_media, range_key, download_quality)
+                        if range_key else None
+                    )
+                    video_path = cached_range or await VideoService.download_video(
+                        url,
+                        task_id=task_id,
+                        quality=download_quality,
+                        budget=job_budget,
+                        progress_callback=progress_callback,
+                        start_time=clip_start_time,
+                        end_time=clip_end_time,
+                    )
                 # Audio first only when a proxy is configured and we do not
                 # already have the full source cached. Uploads never reach here.
-                if proxy_configured(runtime_config) and video_id and not cached_full:
+                elif proxy_configured(runtime_config) and video_id and not cached_full:
                     def _resolve_analysis():
                         def _download_full():
                             return resolve_full_youtube_download(
@@ -1555,7 +1596,7 @@ class VideoService:
                 transcript = await VideoService.generate_transcript(
                     video_path,
                     processing_mode=processing_mode,
-                    source_url=url if source_type == "youtube" else None,
+                    source_url=None if has_custom_range else (url if source_type == "youtube" else None),
                 )
                 if checkpoint.get("analysis") or checkpoint.get("workflow_final"):
                     # Never combine new word timings with an old clip plan.

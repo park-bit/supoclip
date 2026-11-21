@@ -48,6 +48,7 @@ import {
 import { detectWorkflowIntent, looksLikeInstruction, splitSourceAndInstructions, type WorkflowIntent } from "@/lib/workflow-intent";
 import { cn } from "@/lib/utils";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
+import { parseTimestampToSeconds } from "@/lib/timestamps";
 
 interface CaptionTemplate {
   id: string;
@@ -190,6 +191,9 @@ export default function HomeApp() {
   const [workflowLengths, setWorkflowLengths] = useState<Partial<Record<LengthWorkflow, ClipLength>>>({});
   const [instructions, setInstructions] = useState("");
   const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+  const [timestampsOpen, setTimestampsOpen] = useState(false);
   // Per workflow: settings mean different things in each, and switching back keeps them.
   const [advancedByWorkflow, setAdvancedByWorkflow] = useState<Partial<Record<Workflow, AdvancedValues>>>({});
   const [sourceSeconds, setSourceSeconds] = useState<number | null>(null);
@@ -310,6 +314,9 @@ export default function HomeApp() {
     setFilteredWords("");
     setWorkflowLengths({});
     setAdvancedByWorkflow({});
+    setStartTime("");
+    setEndTime("");
+    setTimestampsOpen(false);
   }
 
   function chooseClipLength(value: ClipLength) {
@@ -734,6 +741,21 @@ export default function HomeApp() {
       if (validation.error) { setError(validation.error); return; }
     }
 
+    if (startTime.trim() && parseTimestampToSeconds(startTime.trim()) === null) {
+      setError("Enter a valid start timestamp (e.g. 01:15:00 or 15:30)");
+      return;
+    }
+    if (endTime.trim() && parseTimestampToSeconds(endTime.trim()) === null) {
+      setError("Enter a valid end timestamp (e.g. 01:45:00 or 45:00)");
+      return;
+    }
+    const startSec = parseTimestampToSeconds(startTime.trim());
+    const endSec = parseTimestampToSeconds(endTime.trim());
+    if (startSec !== null && endSec !== null && endSec <= startSec) {
+      setError("End timestamp must be greater than start timestamp");
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     setStatusMessage("");
@@ -753,7 +775,14 @@ export default function HomeApp() {
       }
 
       const request: Record<string, unknown> = {
-        source: { url: videoUrl, title: sourceType === "upload" && file?.name ? file.name.slice(0, 500) : null },
+        source: {
+          url: videoUrl,
+          title: sourceType === "upload" && file?.name ? file.name.slice(0, 500) : null,
+          start_time: startTime.trim() || null,
+          end_time: endTime.trim() || null,
+        },
+        start_time: startTime.trim() || null,
+        end_time: endTime.trim() || null,
         font_options: fontOptions,
         caption_template: captionTemplate,
         processing_mode: "fast",
@@ -1033,6 +1062,55 @@ export default function HomeApp() {
               </div>
             )}
 
+            {timestampsOpen && (
+              <div className="relative flex items-center gap-2 pb-2 pl-[3.5rem] pr-3 sm:pl-[3.75rem] sm:pr-4">
+                <SourceBranch />
+                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                  <Timer className="size-4" aria-hidden />
+                </span>
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-nowrap">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium text-muted-foreground whitespace-nowrap">From:</span>
+                    <input
+                      type="text"
+                      value={startTime}
+                      onChange={(e) => setStartTime(e.target.value)}
+                      placeholder="00:00:00"
+                      disabled={controlsDisabled}
+                      className="h-8 w-24 rounded-md border bg-transparent px-2 text-sm font-mono outline-none focus:border-foreground/40 disabled:cursor-not-allowed"
+                      aria-label="Start timestamp"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium text-muted-foreground whitespace-nowrap">To:</span>
+                    <input
+                      type="text"
+                      value={endTime}
+                      onChange={(e) => setEndTime(e.target.value)}
+                      placeholder="01:30:00"
+                      disabled={controlsDisabled}
+                      className="h-8 w-24 rounded-md border bg-transparent px-2 text-sm font-mono outline-none focus:border-foreground/40 disabled:cursor-not-allowed"
+                      aria-label="End timestamp"
+                    />
+                  </div>
+                  <span className="text-xs text-muted-foreground hidden md:inline truncate">
+                    Only clip between these timestamps
+                  </span>
+                </div>
+                {(startTime || endTime) && (
+                  <button
+                    type="button"
+                    onClick={() => { setStartTime(""); setEndTime(""); }}
+                    disabled={controlsDisabled}
+                    aria-label="Clear timestamps"
+                    className="mt-0.5 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <X className="size-4" />
+                  </button>
+                )}
+              </div>
+            )}
+
             {(rescue || suggestion?.workflow) && (
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pb-2 pl-3 pr-3 text-xs text-muted-foreground sm:pl-[4.5rem] sm:pr-4">
                 {rescue?.kind === "moved" && (
@@ -1085,6 +1163,22 @@ export default function HomeApp() {
                   <MessageSquareText className="size-3.5" />
                 </Chip>
               )}
+
+              <Chip
+                onClick={() => setTimestampsOpen((prev) => !prev)}
+                disabled={controlsDisabled}
+                active={timestampsOpen || Boolean(startTime.trim() || endTime.trim())}
+                aria-expanded={timestampsOpen}
+                aria-label="Timestamp range"
+                title="Clip between specific timestamps"
+              >
+                <Timer className="size-3.5" />
+                <span className="hidden sm:inline">
+                  {startTime.trim() || endTime.trim()
+                    ? `${startTime.trim() || "0:00"} - ${endTime.trim() || "End"}`
+                    : "Timestamps"}
+                </span>
+              </Chip>
 
               <ComposerSettings
                 label={t("composerSettings.chip")}

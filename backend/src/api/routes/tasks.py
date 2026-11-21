@@ -42,6 +42,7 @@ from ...workers.progress import ProgressTracker
 from ...config import get_config
 from ...youtube_utils import async_get_youtube_video_info, canonical_youtube_url
 from ...youtube_proxy import YouTubeGeoRestrictedError
+from ...youtube_source import parse_clock
 from ...stream_source import (
     PREFLIGHT_DEADLINE_SECONDS as STREAM_PREFLIGHT_DEADLINE_SECONDS,
     StreamSourceError,
@@ -74,7 +75,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, Any]:
+async def _preflight_youtube_source(
+    url: str,
+    duration_limit: int,
+    start_seconds: Optional[float] = None,
+    end_seconds: Optional[float] = None,
+) -> Dict[str, Any]:
     """Check duration before creating a task or consuming a generation."""
     # wait_for cancels the awaiting task when this elapses. A yt-dlp call already
     # running inside asyncio.to_thread can finish in the background.
@@ -124,20 +130,49 @@ async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, 
             },
         ) from None
 
-    if duration_limit > 0 and duration > duration_limit:
+    if start_seconds is not None and start_seconds >= duration:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_TIMESTAMP_RANGE",
+                "message": f"Start timestamp ({start_seconds:.1f}s) is beyond video duration ({duration:.1f}s).",
+            },
+        )
+
+    has_range = start_seconds is not None or end_seconds is not None
+    effective_start = start_seconds if start_seconds is not None else 0.0
+    effective_end = min(end_seconds, duration) if end_seconds is not None else duration
+    effective_duration = effective_end - effective_start
+    if effective_duration <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_TIMESTAMP_RANGE",
+                "message": "End timestamp must be greater than start timestamp.",
+            },
+        )
+
+    check_duration = effective_duration if has_range else duration
+    if duration_limit > 0 and check_duration > duration_limit:
+        unit_label = "The selected timestamp range" if has_range else "This video"
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "VIDEO_TOO_LONG",
                 "message": (
-                    f"This video is {duration / 60:.1f} minutes long. Your plan allows "
+                    f"{unit_label} is {check_duration / 60:.1f} minutes long. Your plan allows "
                     f"YouTube videos up to {duration_limit / 60:g} minutes. "
-                    "Choose a shorter video. No minutes were used."
+                    "Choose a shorter range. No minutes were used."
                 ),
-                "duration_seconds": duration,
+                "duration_seconds": check_duration,
                 "max_duration_seconds": duration_limit,
             },
         )
+    if has_range:
+        metadata = dict(metadata)
+        metadata["duration"] = effective_duration
+        metadata["clip_start_time"] = effective_start
+        metadata["clip_end_time"] = effective_end
     return metadata
 
 async def _preflight_stream_source(url: str, source: str, duration_limit: int) -> Dict[str, Any]:
@@ -604,6 +639,20 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
     if not raw_source or not raw_source.get("url"):
         raise HTTPException(status_code=400, detail="Source URL is required")
 
+    start_time_raw = (raw_source.get("start_time") if isinstance(raw_source, dict) else None)
+    if start_time_raw is None:
+        start_time_raw = data.get("start_time")
+    end_time_raw = (raw_source.get("end_time") if isinstance(raw_source, dict) else None)
+    if end_time_raw is None:
+        end_time_raw = data.get("end_time")
+
+    start_seconds = parse_clock(start_time_raw)
+    end_seconds = parse_clock(end_time_raw)
+    if start_seconds is not None and start_seconds < 0:
+        raise HTTPException(status_code=422, detail="Start timestamp cannot be negative")
+    if start_seconds is not None and end_seconds is not None and end_seconds <= start_seconds:
+        raise HTTPException(status_code=422, detail="End timestamp must be greater than start timestamp")
+
     upload_options = {
         "url": raw_source["url"],
         "font_family": font_family,
@@ -617,6 +666,10 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
         "clip_length": clip_length,
         "cleanup_settings": cleanup_settings,
     }
+    if start_seconds is not None:
+        upload_options["clip_start_time"] = start_seconds
+    if end_seconds is not None:
+        upload_options["clip_end_time"] = end_seconds
     if not workflow_spec.legacy:
         # Plain highlights keep their existing key. The key is a hash, so topic
         # and instructions never leave the process.
@@ -650,7 +703,10 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
         stream_metadata: Dict[str, Any] | None = None
         if source_type == "youtube":
             metadata = await _preflight_youtube_source(
-                raw_source["url"], billing["max_youtube_duration_seconds"]
+                raw_source["url"],
+                billing["max_youtube_duration_seconds"],
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
             )
             source_title = source_title or metadata.get("title") or "YouTube Video"
             duration_seconds = float(metadata["duration"])
@@ -704,6 +760,8 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
                         {
                             "processing_job_id": processing_job_id,
                             "clip_length": clip_length,
+                            "clip_start_time": start_seconds,
+                            "clip_end_time": end_seconds,
                             **_stream_resolution_metadata(stream_metadata),
                         },
                         source_url=raw_source["url"],

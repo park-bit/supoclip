@@ -5,6 +5,10 @@ import hmac
 import hashlib
 from pathlib import Path
 
+if sys.platform == "win32" and "fcntl" not in sys.modules:
+    import unittest.mock
+    sys.modules["fcntl"] = unittest.mock.MagicMock()
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

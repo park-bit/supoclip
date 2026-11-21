@@ -54,6 +54,10 @@ export type RecreatableTask = {
   source_url?: string | null;
   source_title?: string | null;
   source_type?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  clip_start_time?: string | null;
+  clip_end_time?: string | null;
   font_family?: string | null;
   font_size?: number | null;
   font_color?: string | null;
@@ -109,6 +113,8 @@ export function buildRecreateBody(
       url: task.source_url,
       title: task.source_type === "upload" && task.source_title ? task.source_title.slice(0, 500) : null,
     },
+    ...(task.start_time || task.clip_start_time ? { start_time: task.start_time ?? task.clip_start_time } : {}),
+    ...(task.end_time || task.clip_end_time ? { end_time: task.end_time ?? task.clip_end_time } : {}),
     font_options: buildFontOptionsPayload(task.font_family ?? null, task.font_size ?? null, task.font_color ?? null),
     caption_template: task.caption_template || "default",
     processing_mode: task.processing_mode || "fast",

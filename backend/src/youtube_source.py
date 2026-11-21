@@ -8,7 +8,10 @@ and download a new range only when the cut extends past what is stored.
 
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import json
 import logging
 import shutil
@@ -448,10 +451,12 @@ def _cache_lock(directory: Path):
     directory.mkdir(parents=True, exist_ok=True)
     handle = (directory / ".lock").open("a")
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
         yield
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
+        if fcntl is not None:
+            fcntl.flock(handle, fcntl.LOCK_UN)
         handle.close()
 
 
